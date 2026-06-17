@@ -19,7 +19,7 @@ try:
     load_dotenv()
 except ImportError:
     pass
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from threading import Lock
 
@@ -163,7 +163,7 @@ def main():
     print(f"[*] Webhook: http://0.0.0.0:{port}/webhook", flush=True)
     print(f"[*] Check: http://localhost:{port}/check/<email>", flush=True)
 
-    server = HTTPServer(('0.0.0.0', port), EmailHandler)
+    server = ThreadingHTTPServer(('0.0.0.0', port), EmailHandler)
     server.serve_forever()
 
 
