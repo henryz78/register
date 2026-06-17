@@ -561,6 +561,7 @@ async def load_governor(sched):
         prev = _cpu_times()
     except Exception:
         prev = None
+    cpu_avg = float(CPU_TARGET)  # EMA 平滑后的 CPU 值,避免单次采样抖动
     while not STOP.is_set():
         await asyncio.sleep(4)
         cpu_pct = float(CPU_TARGET)
@@ -572,15 +573,18 @@ async def load_governor(sched):
             prev = cur
         except Exception:
             pass
+        # EMA:0.3 权重给新值,0.7 保留历史,平滑浏览器突发型负载的 4%↔100% 跳变
+        cpu_avg = 0.3 * cpu_pct + 0.7 * cpu_avg
 
         free_mb = _free_mem_mb()
         starving = sched.tokens.qsize() < T_TARGET or sched.ready.qsize() < Q_TARGET
-        # 内存护栏优先:可用内存低于下限就收缩;否则按 CPU 目标(±5%)自适应伸缩。
+        # 内存护栏优先:可用内存低于下限就收缩。
+        # 收缩阈值:EMA > 目标+10%;扩张阈值:EMA < 目标-10%。宽窗口防振荡。
         if free_mb < MIN_FREE_MEM_MB and sched.target_slots > 2:
             sched.target_slots -= 1
-        elif cpu_pct > CPU_TARGET + 5 and sched.target_slots > 2:
+        elif cpu_avg > CPU_TARGET + 10 and sched.target_slots > 2:
             sched.target_slots -= 1
-        elif (cpu_pct < CPU_TARGET - 5 and starving
+        elif (cpu_avg < CPU_TARGET - 10 and starving
               and free_mb > MIN_FREE_MEM_MB and sched.target_slots < sched.max_slots):
             sched.target_slots += 1
 
@@ -588,7 +592,7 @@ async def load_governor(sched):
         rate = success_count / (elapsed / 60) if elapsed > 60 else 0
         hit = (sched.codes_got / sched.codes_sent * 100) if sched.codes_sent else 0
         log(f'[*] slots:{sched.target_slots}/{sched.max_slots} act:{sched.active} '
-            f'cpu:{cpu_pct:.0f}%/{CPU_TARGET} mem:{free_mb}M T:{sched.tokens.qsize()} Q:{sched.ready.qsize()} '
+            f'cpu:{cpu_pct:.0f}% avg:{cpu_avg:.0f}%/{CPU_TARGET} mem:{free_mb}M T:{sched.tokens.qsize()} Q:{sched.ready.qsize()} '
             f'sent:{sched.codes_sent} got:{sched.codes_got}({hit:.0f}%) '
             f'rate:{rate:.1f}/min #{success_count}')
         if TARGET and success_count >= TARGET:
