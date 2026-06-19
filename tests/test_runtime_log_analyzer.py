@@ -52,6 +52,8 @@ class RuntimeLogAnalyzerTests(unittest.TestCase):
         text = (
             "[*] T:1 Q:2 phys:3 p_send:1 t_slot:4 q_slot:5 q_pend:6 "
             "p_batch:3.5 t_prog:1 q_inflight:4 "
+            "solver_goto:0.10 solver_inject:0.20 solver_initial:0.50 "
+            "solver_click:0.01 solver_wait:11.80 solver_reuse:0.75 solver_visible:0.00 "
             "t_prod:20 t_adm:18 t_exp:1 q_sent:24 q_ret:22 q_adm:20 q_exp:0 "
             "pair:17 ok:16 fail:1 rate:9.1/min #16"
         )
@@ -63,6 +65,8 @@ class RuntimeLogAnalyzerTests(unittest.TestCase):
         self.assertEqual(rows[0].kind, "csp")
         self.assertEqual(summary["last_ok"], 16)
         self.assertEqual(summary["last_q_return_minus_t_prod"], 2)
+        self.assertEqual(summary["last_solver_wait"], 11.8)
+        self.assertEqual(summary["last_solver_reuse"], 0.75)
 
 
 if __name__ == "__main__":

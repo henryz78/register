@@ -39,6 +39,13 @@ class MonitorRow:
     q_adm: int | None = None
     pair: int | None = None
     fail: int | None = None
+    solver_goto: float | None = None
+    solver_inject: float | None = None
+    solver_initial: float | None = None
+    solver_click: float | None = None
+    solver_wait: float | None = None
+    solver_reuse: float | None = None
+    solver_visible: float | None = None
     slots: int | None = None
     max_slots: int | None = None
     active: int | None = None
@@ -53,6 +60,11 @@ class MonitorRow:
 def _int_field(rest: str, name: str) -> int | None:
     match = re.search(rf"\b{name}:(\d+)", rest)
     return int(match.group(1)) if match else None
+
+
+def _float_field(rest: str, name: str) -> float | None:
+    match = re.search(rf"\b{name}:([0-9.]+)", rest)
+    return float(match.group(1)) if match else None
 
 
 def parse_monitor_lines(text_or_lines: str | Iterable[str]) -> list[MonitorRow]:
@@ -79,6 +91,13 @@ def parse_monitor_lines(text_or_lines: str | Iterable[str]) -> list[MonitorRow]:
                     q_adm=_int_field(rest, "q_adm"),
                     pair=_int_field(rest, "pair"),
                     fail=_int_field(rest, "fail"),
+                    solver_goto=_float_field(rest, "solver_goto"),
+                    solver_inject=_float_field(rest, "solver_inject"),
+                    solver_initial=_float_field(rest, "solver_initial"),
+                    solver_click=_float_field(rest, "solver_click"),
+                    solver_wait=_float_field(rest, "solver_wait"),
+                    solver_reuse=_float_field(rest, "solver_reuse"),
+                    solver_visible=_float_field(rest, "solver_visible"),
                 )
             )
             continue
@@ -137,6 +156,13 @@ def summarize_monitor_rows(rows: list[MonitorRow], recent_count: int = 6) -> dic
         "last_q_adm": last.q_adm,
         "last_pair": last.pair,
         "last_fail": last.fail,
+        "last_solver_goto": last.solver_goto,
+        "last_solver_inject": last.solver_inject,
+        "last_solver_initial": last.solver_initial,
+        "last_solver_click": last.solver_click,
+        "last_solver_wait": last.solver_wait,
+        "last_solver_reuse": last.solver_reuse,
+        "last_solver_visible": last.solver_visible,
         "recent_ok_per_min": _rate_delta(recent, "ok"),
         "recent_t_prod_per_min": _rate_delta(recent, "t_prod"),
         "recent_q_ret_per_min": _rate_delta(recent, "q_ret"),

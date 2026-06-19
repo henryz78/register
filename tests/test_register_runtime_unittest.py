@@ -25,14 +25,23 @@ import register
 class FakePage:
     def __init__(self):
         self.closed = False
+        self.goto_calls = []
+        self.waits = []
 
-    async def set_viewport_size(self, _size):
+    async def set_viewport_size(self, size):
+        self.viewport = size
         pass
 
-    async def goto(self, _url, timeout=None):
+    async def goto(self, url, timeout=None, wait_until=None):
+        self.goto_calls.append({
+            "url": url,
+            "timeout": timeout,
+            "wait_until": wait_until,
+        })
         pass
 
-    async def wait_for_timeout(self, _timeout):
+    async def wait_for_timeout(self, timeout):
+        self.waits.append(timeout)
         pass
 
     async def close(self):
@@ -43,6 +52,7 @@ class FakePage:
 class FakeBrowser:
     def __init__(self):
         self.pages = []
+        self.context = types.SimpleNamespace(request=object())
 
     async def new_page(self):
         page = FakePage()
@@ -397,6 +407,85 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("t_solve_avg:2.5", row)
         self.assertIn("t_solve_fail:1", row)
+
+    async def test_record_solver_trace_accumulates_stage_metrics(self):
+        metrics = Metrics()
+
+        register._record_solver_trace(
+            metrics,
+            {
+                "goto_s": 1.0,
+                "inject_s": 0.2,
+                "initial_s": 0.5,
+                "click_s": 0.1,
+                "wait_s": 20.0,
+                "reused": True,
+                "visible_frame": False,
+            },
+            21.8,
+            "token",
+        )
+        register._record_solver_trace(metrics, {}, 10.0, None)
+
+        self.assertEqual(metrics.t_solve_count, 2)
+        self.assertEqual(metrics.t_solve_failed, 1)
+        self.assertAlmostEqual(metrics.solver_goto_seconds, 1.0)
+        self.assertAlmostEqual(metrics.solver_wait_seconds, 20.0)
+        self.assertEqual(metrics.solver_reused_count, 1)
+        self.assertEqual(metrics.solver_visible_frame_count, 0)
+
+    async def test_solve_one_turnstile_uses_fast_click_by_default(self):
+        calls = []
+
+        async def fake_start(_browser, *, fast_click=False):
+            calls.append(fast_click)
+            return {"page": object()}
+
+        async def fake_wait(_item):
+            return "token-value"
+
+        old_start = register._start_turnstile_challenge
+        old_wait = register._wait_turnstile_challenge
+        try:
+            register._start_turnstile_challenge = fake_start
+            register._wait_turnstile_challenge = fake_wait
+
+            token = await register.solve_one_turnstile(object())
+        finally:
+            register._start_turnstile_challenge = old_start
+            register._wait_turnstile_challenge = old_wait
+
+        self.assertEqual(token, "token-value")
+        self.assertEqual(calls, [True])
+
+    async def test_prepare_signup_page_uses_configured_navigation_profile(self):
+        page = FakePage()
+
+        old_wait_until = getattr(register, "PAGE_GOTO_WAIT_UNTIL", None)
+        old_post_wait = getattr(register, "PAGE_POST_WAIT_MS", None)
+        try:
+            register.PAGE_GOTO_WAIT_UNTIL = "domcontentloaded"
+            register.PAGE_POST_WAIT_MS = 500
+
+            await register._prepare_signup_page(page, redirect=True)
+        finally:
+            if old_wait_until is None:
+                delattr(register, "PAGE_GOTO_WAIT_UNTIL")
+            else:
+                register.PAGE_GOTO_WAIT_UNTIL = old_wait_until
+            if old_post_wait is None:
+                delattr(register, "PAGE_POST_WAIT_MS")
+            else:
+                register.PAGE_POST_WAIT_MS = old_post_wait
+
+        self.assertEqual(page.goto_calls[-1]["wait_until"], "domcontentloaded")
+        self.assertEqual(page.waits[-1], 500)
+
+    async def test_default_solver_and_page_latency_profile_matches_accepted_optimization(self):
+        self.assertEqual(register.SOLVER_INITIAL_WAIT_MS, 500)
+        self.assertTrue(register.SOLVER_FAST_CLICK)
+        self.assertEqual(register.PAGE_GOTO_WAIT_UNTIL, "domcontentloaded")
+        self.assertEqual(register.PAGE_POST_WAIT_MS, 500)
 
 
 if __name__ == "__main__":

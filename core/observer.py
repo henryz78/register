@@ -13,6 +13,9 @@ class Metrics:
         'start_time',
         't_produced', 't_admitted', 't_claimed', 't_expired', 't_discarded',
         't_solve_count', 't_solve_seconds', 't_solve_failed',
+        'solver_goto_seconds', 'solver_inject_seconds', 'solver_initial_seconds',
+        'solver_click_seconds', 'solver_wait_seconds', 'solver_reused_count',
+        'solver_visible_frame_count',
         'q_sent', 'q_returned', 'q_admitted', 'q_claimed', 'q_expired', 'q_discarded',
         'q_send_batches', 'q_send_batch_items',
         'pair_claimed', 'pair_consumed_ok', 'pair_consumed_fail',
@@ -30,6 +33,13 @@ class Metrics:
         self.t_solve_count = 0
         self.t_solve_seconds = 0.0
         self.t_solve_failed = 0
+        self.solver_goto_seconds = 0.0
+        self.solver_inject_seconds = 0.0
+        self.solver_initial_seconds = 0.0
+        self.solver_click_seconds = 0.0
+        self.solver_wait_seconds = 0.0
+        self.solver_reused_count = 0
+        self.solver_visible_frame_count = 0
         # Q 生命周期
         self.q_sent = 0
         self.q_returned = 0
@@ -58,6 +68,34 @@ class Metrics:
             self.t_solve_seconds / self.t_solve_count
             if self.t_solve_count else 0
         )
+        solver_goto_avg = (
+            self.solver_goto_seconds / self.t_solve_count
+            if self.t_solve_count else 0
+        )
+        solver_inject_avg = (
+            self.solver_inject_seconds / self.t_solve_count
+            if self.t_solve_count else 0
+        )
+        solver_initial_avg = (
+            self.solver_initial_seconds / self.t_solve_count
+            if self.t_solve_count else 0
+        )
+        solver_click_avg = (
+            self.solver_click_seconds / self.t_solve_count
+            if self.t_solve_count else 0
+        )
+        solver_wait_avg = (
+            self.solver_wait_seconds / self.t_solve_count
+            if self.t_solve_count else 0
+        )
+        solver_reuse_ratio = (
+            self.solver_reused_count / self.t_solve_count
+            if self.t_solve_count else 0
+        )
+        solver_visible_ratio = (
+            self.solver_visible_frame_count / self.t_solve_count
+            if self.t_solve_count else 0
+        )
         p_send = sems.get("p_send")
         admission = sems.get("admission")
         p_send_part = f' p_send:{p_send._value}' if p_send is not None else ''
@@ -71,6 +109,10 @@ class Metrics:
             f'q_slot:{sems["q_slot"]._value} q_pend:{sems["q_pending"]._value} '
             f'p_batch:{p_batch_avg:.1f}{admission_part} '
             f't_solve_avg:{t_solve_avg:.1f} t_solve_fail:{self.t_solve_failed} '
+            f'solver_goto:{solver_goto_avg:.2f} solver_inject:{solver_inject_avg:.2f} '
+            f'solver_initial:{solver_initial_avg:.2f} solver_click:{solver_click_avg:.2f} '
+            f'solver_wait:{solver_wait_avg:.2f} solver_reuse:{solver_reuse_ratio:.2f} '
+            f'solver_visible:{solver_visible_ratio:.2f} '
             f't_prod:{self.t_produced} t_adm:{self.t_admitted} t_exp:{self.t_expired} '
             f'q_sent:{self.q_sent} q_ret:{self.q_returned} q_adm:{self.q_admitted} q_exp:{self.q_expired} '
             f'pair:{self.pair_claimed} ok:{self.pair_consumed_ok} fail:{self.pair_consumed_fail} '

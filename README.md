@@ -98,6 +98,10 @@ EMAIL_API=http://127.0.0.1:8080
 | `T_SLOT_CAP` | `8` | token 缓冲容量 |
 | `Q_SLOT_CAP` | `8` | 验证码缓冲容量 |
 | `Q_PENDING_CAP` | `12` | 等待验证码返回的请求上限 |
+| `SOLVER_INITIAL_WAIT_MS` | `500` | token 页面注入后的首次等待时间 |
+| `SOLVER_FAST_CLICK` | `1` | 没有可见验证框时跳过慢点击 |
+| `PAGE_GOTO_WAIT_UNTIL` | `domcontentloaded` | 注册页面导航等待条件 |
+| `PAGE_POST_WAIT_MS` | `500` | 页面导航后的短等待时间 |
 
 不确定怎么调时，先保持默认值。需要压测时，优先观察 `PHYSICAL_CAP`，不要先改 Worker 数量。
 

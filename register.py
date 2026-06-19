@@ -86,6 +86,8 @@ _Q_HIGH_WATER_OVERRIDE = _env_int_or_none("Q_HIGH_WATER")
 _Q_LOW_WATER_OVERRIDE  = _env_int_or_none("Q_LOW_WATER")
 P_BATCH_MAX     = max(1, _env_int("P_BATCH_MAX", 4))
 P_SEND_CAP      = _env_int("P_SEND_CAP", 0)           # >0=显式限制并发 P 发送页面;0=不额外建模
+PAGE_GOTO_WAIT_UNTIL = os.environ.get("PAGE_GOTO_WAIT_UNTIL", "domcontentloaded").strip() or "domcontentloaded"
+PAGE_POST_WAIT_MS = _env_int("PAGE_POST_WAIT_MS", 500)
 
 SITE_KEY = None
 ACTION_ID = None
@@ -320,6 +322,14 @@ async def grpc_create_code(page, email):
     s = await page.evaluate(f"(async()=>{{var fb=Uint8Array.from(atob('{fb64}'),c=>c.charCodeAt(0));var r=await fetch('{SITE_URL}/auth_mgmt.AuthManagement/CreateEmailValidationCode',{{method:'POST',headers:{{'content-type':'application/grpc-web+proto','x-grpc-web':'1','x-user-agent':'connect-es/2.1.1'}},body:fb.buffer}});return r.headers.get('grpc-status')||'0';}})()")
     return s == '0'
 
+
+async def _prepare_signup_page(page, *, redirect=True, timeout=30000):
+    url = f'{SITE_URL}/sign-up?redirect=grok-com' if redirect else f'{SITE_URL}/sign-up'
+    await page.goto(url, timeout=timeout, wait_until=PAGE_GOTO_WAIT_UNTIL)
+    if PAGE_POST_WAIT_MS > 0:
+        await page.wait_for_timeout(PAGE_POST_WAIT_MS)
+
+
 async def grpc_verify_code(page, email, code):
     inner = pb_str(1, email) + pb_str(2, code)
     frame = b'\x00' + struct.pack('>I', len(inner)) + inner
@@ -365,20 +375,25 @@ SOLVER_REUSE = (os.environ.get("SOLVER_REUSE", "1").strip().lower() not in ("0",
 _solver_pool = []
 _solver_lock = asyncio.Lock()
 MAX_SOLVER_REUSE = _env_int("MAX_SOLVER_REUSE", 25)
-SOLVER_INITIAL_WAIT_MS = _env_int("SOLVER_INITIAL_WAIT_MS", 1500)
+SOLVER_INITIAL_WAIT_MS = _env_int("SOLVER_INITIAL_WAIT_MS", 500)
 SOLVER_POLL_INTERVAL_MS = _env_int("SOLVER_POLL_INTERVAL_MS", 500)
 SOLVER_POLL_ATTEMPTS = _env_int("SOLVER_POLL_ATTEMPTS", 100)
+SOLVER_FAST_CLICK = (os.environ.get("SOLVER_FAST_CLICK", "1").strip().lower() not in ("0", "false", "no"))
 
 async def _get_solver_page(browser):
     if SOLVER_REUSE:
         async with _solver_lock:
             if _solver_pool:
-                return _solver_pool.pop()
+                item = _solver_pool.pop()
+                item["reused"] = True
+                item["goto_s"] = 0.0
+                return item
     p = await browser.new_page()
     await p.set_viewport_size({"width": 800, "height": 600})
+    goto_started = time.time()
     await p.goto(f'{SITE_URL}/sign-up', timeout=20000)
     await p.wait_for_timeout(1000)
-    return {"page": p, "n": 0}
+    return {"page": p, "n": 0, "reused": False, "goto_s": time.time() - goto_started}
 
 async def _put_solver_page(item, ok):
     p = item["page"]
@@ -394,48 +409,133 @@ async def _put_solver_page(item, ok):
     try: await p.close()
     except Exception: pass
 
-async def solve_one_turnstile(browser):
-    item = await _get_solver_page(browser)
-    p = item["page"]
-    ok = False
+async def _inject_turnstile_widget(p):
+    await p.evaluate(f"""var d=document.createElement('div');d.className='cf-turnstile';d.setAttribute('data-sitekey','{SITE_KEY}');d.style.cssText='position:fixed;top:10px;left:10px;z-index:99999;background:white;padding:12px;border:2px solid red;border-radius:6px;width:300px;height:70px';document.body.appendChild(d);function __r(){{window.turnstile&&window.turnstile.render(d,{{sitekey:'{SITE_KEY}',callback:function(t){{var i=document.querySelector('input[name="cf-turnstile-response"]');if(!i){{i=document.createElement('input');i.type='hidden';i.name='cf-turnstile-response';document.body.appendChild(i);}}i.value=t;}}}})}}if(window.turnstile){{__r()}}else{{var s=document.createElement('script');s.src='https://challenges.cloudflare.com/turnstile/v0/api.js';s.onload=function(){{setTimeout(__r,1000)}};document.head.appendChild(s);}}""")
+
+
+async def _has_visible_turnstile_frame(p):
     try:
-        # 注入 widget;turnstile 脚本已加载(复用页面)则直接 render,否则先加载脚本
-        await p.evaluate(f"""var d=document.createElement('div');d.className='cf-turnstile';d.setAttribute('data-sitekey','{SITE_KEY}');d.style.cssText='position:fixed;top:10px;left:10px;z-index:99999;background:white;padding:12px;border:2px solid red;border-radius:6px;width:300px;height:70px';document.body.appendChild(d);function __r(){{window.turnstile&&window.turnstile.render(d,{{sitekey:'{SITE_KEY}',callback:function(t){{var i=document.querySelector('input[name="cf-turnstile-response"]');if(!i){{i=document.createElement('input');i.type='hidden';i.name='cf-turnstile-response';document.body.appendChild(i);}}i.value=t;}}}})}}if(window.turnstile){{__r()}}else{{var s=document.createElement('script');s.src='https://challenges.cloudflare.com/turnstile/v0/api.js';s.onload=function(){{setTimeout(__r,1000)}};document.head.appendChild(s);}}""")
-        await p.wait_for_timeout(SOLVER_INITIAL_WAIT_MS)
-        for sel in ["iframe[src*='challenges.cloudflare.com']","iframe[src*='turnstile']",".cf-turnstile iframe"]:
-            try:
-                fr = p.frame_locator(sel).first
-                await fr.locator("#checkbox, .checkbox, input[type=checkbox], body").first.click(timeout=3000)
-                break
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                continue
-        for i in range(SOLVER_POLL_ATTEMPTS):
-            await asyncio.sleep(max(50, SOLVER_POLL_INTERVAL_MS) / 1000)
-            try:
-                t = await p.evaluate('document.querySelector("input[name=\\"cf-turnstile-response\\"]")?.value||""')
-                if t and len(t) > 10:
-                    ok = True
-                    return t
+        return await p.evaluate(
+            """() => Array.from(document.querySelectorAll('iframe')).some((f) => {
+                const r = f.getBoundingClientRect();
+                return r.width >= 20 && r.height >= 20;
+            })"""
+        )
+    except Exception:
+        return False
+
+
+async def _click_turnstile_if_possible(p, *, fast=False):
+    visible = await _has_visible_turnstile_frame(p)
+    if fast and not visible:
+        return visible
+    click_timeout = 500 if fast else 3000
+    for sel in ["iframe[src*='challenges.cloudflare.com']","iframe[src*='turnstile']",".cf-turnstile iframe"]:
+        try:
+            fr = p.frame_locator(sel).first
+            await fr.locator("#checkbox, .checkbox, input[type=checkbox], body").first.click(timeout=click_timeout)
+            break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            continue
+    return visible
+
+
+async def _poll_turnstile_token(p):
+    for i in range(SOLVER_POLL_ATTEMPTS):
+        await asyncio.sleep(max(50, SOLVER_POLL_INTERVAL_MS) / 1000)
+        try:
+            t = await p.evaluate('document.querySelector("input[name=\\"cf-turnstile-response\\"]")?.value||""')
+            if t and len(t) > 10:
+                return t
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        retry_every = max(1, int(10000 / max(50, SOLVER_POLL_INTERVAL_MS)))
+        if i > 0 and i % retry_every == 0:
+            try: await p.locator(".cf-turnstile").first.click(timeout=1000)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 pass
-            retry_every = max(1, int(10000 / max(50, SOLVER_POLL_INTERVAL_MS)))
-            if i > 0 and i % retry_every == 0:
-                try: await p.locator(".cf-turnstile").first.click(timeout=1000)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    pass
-        return None
+    return None
+
+
+async def _start_turnstile_challenge(browser, *, fast_click=False):
+    item = await _get_solver_page(browser)
+    p = item["page"]
+    trace = {
+        "goto_s": item.get("goto_s", 0.0),
+        "reused": bool(item.get("reused", False)),
+        "reuse_count": item.get("n", 0),
+        "inject_s": 0.0,
+        "initial_s": 0.0,
+        "click_s": 0.0,
+        "wait_s": 0.0,
+        "visible_frame": False,
+    }
+    item["trace"] = trace
+    try:
+        stage_started = time.time()
+        await _inject_turnstile_widget(p)
+        trace["inject_s"] = time.time() - stage_started
+        stage_started = time.time()
+        await p.wait_for_timeout(SOLVER_INITIAL_WAIT_MS)
+        trace["initial_s"] = time.time() - stage_started
+        stage_started = time.time()
+        trace["visible_frame"] = await _click_turnstile_if_possible(p, fast=fast_click)
+        trace["click_s"] = time.time() - stage_started
+        return item
+    except BaseException:
+        await _put_solver_page(item, False)
+        raise
+
+
+async def _wait_turnstile_challenge(item):
+    ok = False
+    try:
+        wait_started = time.time()
+        token = await _poll_turnstile_token(item["page"])
+        item.get("trace", {})["wait_s"] = time.time() - wait_started
+        ok = token is not None
+        return token
     except asyncio.CancelledError:
         raise
     except Exception:
         return None
     finally:
         await _put_solver_page(item, ok)
+
+
+async def solve_one_turnstile(browser):
+    token, _trace = await solve_one_turnstile_with_trace(browser)
+    return token
+
+
+async def solve_one_turnstile_with_trace(browser):
+    item = await _start_turnstile_challenge(browser, fast_click=SOLVER_FAST_CLICK)
+    token = await _wait_turnstile_challenge(item)
+    return token, item.get("trace", {})
+
+
+def _record_solver_trace(metrics, trace, total_seconds, token):
+    metrics.t_solve_count += 1
+    metrics.t_solve_seconds += total_seconds
+    if token is None:
+        metrics.t_solve_failed += 1
+    if not trace:
+        return
+    metrics.solver_goto_seconds += trace.get("goto_s", 0.0)
+    metrics.solver_inject_seconds += trace.get("inject_s", 0.0)
+    metrics.solver_initial_seconds += trace.get("initial_s", 0.0)
+    metrics.solver_click_seconds += trace.get("click_s", 0.0)
+    metrics.solver_wait_seconds += trace.get("wait_s", 0.0)
+    if trace.get("reused"):
+        metrics.solver_reused_count += 1
+    if trace.get("visible_frame"):
+        metrics.solver_visible_frame_count += 1
 
 
 # ──────────────────────────────────────────────
@@ -595,8 +695,7 @@ async def _send_q_request_batch(browser, physical_sem, p_send_sem, requests):
         page = await browser.new_page()
         await page.set_viewport_size({"width": 800, "height": 600})
         try:
-            await page.goto(f'{SITE_URL}/sign-up?redirect=grok-com', timeout=30000)
-            await page.wait_for_timeout(1500)
+            await _prepare_signup_page(page, redirect=True, timeout=30000)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -714,15 +813,13 @@ async def s_worker(wid, browser, inventory, physical_sem, t_slot_sem, metrics, a
 
             await physical_sem.acquire()
             token = None
+            trace = {}
             solve_started = time.time()
             try:
-                token = await solve_one_turnstile(browser)
+                token, trace = await solve_one_turnstile_with_trace(browser)
             finally:
                 solve_elapsed = time.time() - solve_started
-                metrics.t_solve_count += 1
-                metrics.t_solve_seconds += solve_elapsed
-                if token is None:
-                    metrics.t_solve_failed += 1
+                _record_solver_trace(metrics, trace, solve_elapsed, token)
                 physical_sem.release()
 
             if token is None:
@@ -867,8 +964,7 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
         page = await browser.new_page()
         await page.set_viewport_size({"width": 800, "height": 600})
         try:
-            await page.goto(f'{SITE_URL}/sign-up?redirect=grok-com', timeout=30000)
-            await page.wait_for_timeout(1500)
+            await _prepare_signup_page(page, redirect=True, timeout=30000)
             sso = None
             if await grpc_verify_code(page, email, code):
                 sso = await server_action_register(page, email, password, code, token)
