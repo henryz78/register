@@ -89,7 +89,7 @@ EMAIL_API=http://127.0.0.1:8080
 运行时会定期输出状态行，例如：
 
 ```text
-[*] T:0 Q:6 phys:0 t_solve_avg:23.7 q_sent:44 q_ret:44 pair:38 ok:37 fail:0 rate:9.9/min #37
+[*] T:0 Q:6 phys:0 s_phys:0.10/11.30 p_stage:0.02/1.10/1.70 c_stage:0.02/0.30/0.80 t_solve_avg:11.8 q_sent:44 q_ret:44 pair:38 ok:37 fail:0 rate:9.9/min #37
 ```
 
 常用字段：
@@ -99,6 +99,10 @@ EMAIL_API=http://127.0.0.1:8080
 | `T` | 当前可用 token 数量 |
 | `Q` | 当前可用验证码数量 |
 | `phys` | 空闲浏览器并发许可 |
+| `s_phys` / `p_phys` / `c_phys` | S/P/C 获取浏览器许可的平均等待秒数 / 平均持有秒数 |
+| `p_stage` | P 阶段平均耗时：建邮箱 / 准备页面 / 发送请求 |
+| `c_stage` | C 阶段平均耗时：拿页面 / 验证码校验 / 注册提交 |
+| `c_hot` | C 热页池命中 / 未命中次数 |
 | `t_solve_avg` | 平均 token 获取时间 |
 | `q_sent` / `q_ret` | 已发送 / 已收到的验证码数量 |
 | `pair` | 已配对消费次数 |

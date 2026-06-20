@@ -33,12 +33,34 @@ class MonitorRow:
     q: int
     ok: int
     rate: float
+    phys: int | None = None
+    p_send: int | None = None
+    t_slot: int | None = None
+    q_slot: int | None = None
+    q_pend: int | None = None
+    p_batch: float | None = None
+    t_prog: int | None = None
+    q_inflight: int | None = None
     t_prod: int | None = None
     q_sent: int | None = None
     q_ret: int | None = None
     q_adm: int | None = None
     pair: int | None = None
     fail: int | None = None
+    s_phys_wait: float | None = None
+    s_phys_hold: float | None = None
+    p_phys_wait: float | None = None
+    p_phys_hold: float | None = None
+    c_phys_wait: float | None = None
+    c_phys_hold: float | None = None
+    p_email_create: float | None = None
+    p_page_prepare: float | None = None
+    p_send_stage: float | None = None
+    c_page_acquire: float | None = None
+    c_verify: float | None = None
+    c_register: float | None = None
+    c_hot_hits: int | None = None
+    c_hot_misses: int | None = None
     solver_goto: float | None = None
     solver_inject: float | None = None
     solver_initial: float | None = None
@@ -67,6 +89,27 @@ def _float_field(rest: str, name: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def _float_pair_field(rest: str, name: str) -> tuple[float | None, float | None]:
+    match = re.search(rf"\b{name}:([0-9.]+)/([0-9.]+)", rest)
+    if not match:
+        return None, None
+    return float(match.group(1)), float(match.group(2))
+
+
+def _float_triple_field(rest: str, name: str) -> tuple[float | None, float | None, float | None]:
+    match = re.search(rf"\b{name}:([0-9.]+)/([0-9.]+)/([0-9.]+)", rest)
+    if not match:
+        return None, None, None
+    return float(match.group(1)), float(match.group(2)), float(match.group(3))
+
+
+def _int_pair_field(rest: str, name: str) -> tuple[int | None, int | None]:
+    match = re.search(rf"\b{name}:(\d+)/(\d+)", rest)
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
+
+
 def parse_monitor_lines(text_or_lines: str | Iterable[str]) -> list[MonitorRow]:
     if isinstance(text_or_lines, str):
         lines = text_or_lines.splitlines()
@@ -78,6 +121,12 @@ def parse_monitor_lines(text_or_lines: str | Iterable[str]) -> list[MonitorRow]:
         csp = _CSP_RE.match(line)
         if csp:
             rest = csp.group("rest")
+            s_phys_wait, s_phys_hold = _float_pair_field(rest, "s_phys")
+            p_phys_wait, p_phys_hold = _float_pair_field(rest, "p_phys")
+            c_phys_wait, c_phys_hold = _float_pair_field(rest, "c_phys")
+            p_email_create, p_page_prepare, p_send_stage = _float_triple_field(rest, "p_stage")
+            c_page_acquire, c_verify, c_register = _float_triple_field(rest, "c_stage")
+            c_hot_hits, c_hot_misses = _int_pair_field(rest, "c_hot")
             rows.append(
                 MonitorRow(
                     kind="csp",
@@ -85,12 +134,34 @@ def parse_monitor_lines(text_or_lines: str | Iterable[str]) -> list[MonitorRow]:
                     q=int(csp.group("q")),
                     ok=int(csp.group("ok")),
                     rate=float(csp.group("rate")),
+                    phys=int(csp.group("phys")),
+                    p_send=int(csp.group("p_send")) if csp.group("p_send") is not None else None,
+                    t_slot=int(csp.group("t_slot")),
+                    q_slot=int(csp.group("q_slot")),
+                    q_pend=int(csp.group("q_pend")),
+                    p_batch=_float_field(rest, "p_batch"),
+                    t_prog=_int_field(rest, "t_prog"),
+                    q_inflight=_int_field(rest, "q_inflight"),
                     t_prod=_int_field(rest, "t_prod"),
                     q_sent=_int_field(rest, "q_sent"),
                     q_ret=_int_field(rest, "q_ret"),
                     q_adm=_int_field(rest, "q_adm"),
                     pair=_int_field(rest, "pair"),
                     fail=_int_field(rest, "fail"),
+                    s_phys_wait=s_phys_wait,
+                    s_phys_hold=s_phys_hold,
+                    p_phys_wait=p_phys_wait,
+                    p_phys_hold=p_phys_hold,
+                    c_phys_wait=c_phys_wait,
+                    c_phys_hold=c_phys_hold,
+                    p_email_create=p_email_create,
+                    p_page_prepare=p_page_prepare,
+                    p_send_stage=p_send_stage,
+                    c_page_acquire=c_page_acquire,
+                    c_verify=c_verify,
+                    c_register=c_register,
+                    c_hot_hits=c_hot_hits,
+                    c_hot_misses=c_hot_misses,
                     solver_goto=_float_field(rest, "solver_goto"),
                     solver_inject=_float_field(rest, "solver_inject"),
                     solver_initial=_float_field(rest, "solver_initial"),
@@ -133,6 +204,12 @@ def _rate_delta(rows: list[MonitorRow], attr: str) -> float | None:
     return (getattr(last, attr) - getattr(first, attr)) / dt
 
 
+def _leader(values: dict[str, float | None]) -> str | None:
+    if any(value is None for value in values.values()):
+        return None
+    return max(values, key=lambda key: values[key] or 0)
+
+
 def summarize_monitor_rows(rows: list[MonitorRow], recent_count: int = 6) -> dict[str, float | int | str | None]:
     if not rows:
         return {"rows": 0}
@@ -145,6 +222,14 @@ def summarize_monitor_rows(rows: list[MonitorRow], recent_count: int = 6) -> dic
         "last_ok": last.ok,
         "last_cumulative_rate": last.rate,
         "last_q_minus_t": last.q - last.t,
+        "last_phys": last.phys,
+        "last_p_send_sem": last.p_send,
+        "last_t_slot": last.t_slot,
+        "last_q_slot": last.q_slot,
+        "last_q_pend": last.q_pend,
+        "last_p_batch": last.p_batch,
+        "last_t_prog": last.t_prog,
+        "last_q_inflight": last.q_inflight,
         "last_q_return_minus_t_prod": (
             last.q_ret - last.t_prod
             if last.q_ret is not None and last.t_prod is not None
@@ -156,6 +241,30 @@ def summarize_monitor_rows(rows: list[MonitorRow], recent_count: int = 6) -> dic
         "last_q_adm": last.q_adm,
         "last_pair": last.pair,
         "last_fail": last.fail,
+        "last_s_phys_wait": last.s_phys_wait,
+        "last_s_phys_hold": last.s_phys_hold,
+        "last_p_phys_wait": last.p_phys_wait,
+        "last_p_phys_hold": last.p_phys_hold,
+        "last_c_phys_wait": last.c_phys_wait,
+        "last_c_phys_hold": last.c_phys_hold,
+        "last_p_email_create": last.p_email_create,
+        "last_p_page_prepare": last.p_page_prepare,
+        "last_p_send": last.p_send_stage,
+        "last_c_page_acquire": last.c_page_acquire,
+        "last_c_verify": last.c_verify,
+        "last_c_register": last.c_register,
+        "last_c_hot_hits": last.c_hot_hits,
+        "last_c_hot_misses": last.c_hot_misses,
+        "last_physical_hold_leader": _leader({
+            "s": last.s_phys_hold,
+            "p": last.p_phys_hold,
+            "c": last.c_phys_hold,
+        }),
+        "last_physical_wait_leader": _leader({
+            "s": last.s_phys_wait,
+            "p": last.p_phys_wait,
+            "c": last.c_phys_wait,
+        }),
         "last_solver_goto": last.solver_goto,
         "last_solver_inject": last.solver_inject,
         "last_solver_initial": last.solver_initial,

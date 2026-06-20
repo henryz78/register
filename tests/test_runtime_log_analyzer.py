@@ -52,6 +52,8 @@ class RuntimeLogAnalyzerTests(unittest.TestCase):
         text = (
             "[*] T:1 Q:2 phys:3 p_send:1 t_slot:4 q_slot:5 q_pend:6 "
             "p_batch:3.5 t_prog:1 q_inflight:4 "
+            "s_phys:0.50/3.00 p_phys:0.20/1.40 c_phys:0.30/2.50 "
+            "p_stage:0.50/0.80/0.40 c_stage:0.30/0.40/1.50 c_hot:4/1 "
             "solver_goto:0.10 solver_inject:0.20 solver_initial:0.50 "
             "solver_click:0.01 solver_wait:11.80 solver_reuse:0.75 solver_visible:0.00 "
             "t_prod:20 t_adm:18 t_exp:1 q_sent:24 q_ret:22 q_adm:20 q_exp:0 "
@@ -67,6 +69,23 @@ class RuntimeLogAnalyzerTests(unittest.TestCase):
         self.assertEqual(summary["last_q_return_minus_t_prod"], 2)
         self.assertEqual(summary["last_solver_wait"], 11.8)
         self.assertEqual(summary["last_solver_reuse"], 0.75)
+        self.assertEqual(summary["last_phys"], 3)
+        self.assertEqual(summary["last_p_batch"], 3.5)
+        self.assertEqual(summary["last_t_prog"], 1)
+        self.assertEqual(summary["last_q_inflight"], 4)
+        self.assertEqual(summary["last_s_phys_hold"], 3.0)
+        self.assertEqual(summary["last_p_phys_wait"], 0.2)
+        self.assertEqual(summary["last_c_phys_hold"], 2.5)
+        self.assertEqual(summary["last_physical_hold_leader"], "s")
+        self.assertEqual(summary["last_physical_wait_leader"], "s")
+        self.assertEqual(summary["last_p_email_create"], 0.5)
+        self.assertEqual(summary["last_p_page_prepare"], 0.8)
+        self.assertEqual(summary["last_p_send"], 0.4)
+        self.assertEqual(summary["last_c_page_acquire"], 0.3)
+        self.assertEqual(summary["last_c_verify"], 0.4)
+        self.assertEqual(summary["last_c_register"], 1.5)
+        self.assertEqual(summary["last_c_hot_hits"], 4)
+        self.assertEqual(summary["last_c_hot_misses"], 1)
 
 
 if __name__ == "__main__":

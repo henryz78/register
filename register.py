@@ -779,7 +779,7 @@ class _NoopAsyncSemaphore:
         return None
 
 
-async def _send_q_request_batch(browser, physical_sem, p_send_sem, requests):
+async def _send_q_request_batch(browser, physical_sem, p_send_sem, requests, metrics=None):
     """使用一个页面发送一批 Q 请求。
 
     返回每个请求的 sent 状态。等待 Q 返回不在此函数内发生,因此这里释放
@@ -787,22 +787,34 @@ async def _send_q_request_batch(browser, physical_sem, p_send_sem, requests):
     """
     p_send_acquired = False
     physical_acquired = False
+    physical_wait_started = None
+    physical_hold_started = None
     page = None
     await p_send_sem.acquire()
     p_send_acquired = True
     try:
+        physical_wait_started = time.time()
         await physical_sem.acquire()
         physical_acquired = True
+        physical_hold_started = time.time()
+        if metrics is not None:
+            metrics.p_physical_count += 1
+            metrics.p_physical_wait_seconds += physical_hold_started - physical_wait_started
         page = await browser.new_page()
         await page.set_viewport_size({"width": 800, "height": 600})
         try:
+            stage_started = time.time()
             await _prepare_signup_page(page, redirect=True, timeout=30000)
+            if metrics is not None:
+                metrics.p_page_prepare_count += 1
+                metrics.p_page_prepare_seconds += time.time() - stage_started
         except asyncio.CancelledError:
             raise
         except Exception:
             return [{**item, "sent": False} for item in requests]
 
         results = []
+        send_started = time.time()
         for item in requests:
             sent = False
             try:
@@ -812,6 +824,9 @@ async def _send_q_request_batch(browser, physical_sem, p_send_sem, requests):
             except Exception:
                 sent = False
             results.append({**item, "sent": sent})
+        if metrics is not None:
+            metrics.p_send_count += 1
+            metrics.p_send_seconds += time.time() - send_started
         return results
     finally:
         if page is not None:
@@ -820,6 +835,8 @@ async def _send_q_request_batch(browser, physical_sem, p_send_sem, requests):
             except Exception:
                 pass
         if physical_acquired:
+            if metrics is not None and physical_hold_started is not None:
+                metrics.p_physical_hold_seconds += time.time() - physical_hold_started
             physical_sem.release()
         if p_send_acquired:
             p_send_sem.release()
@@ -905,14 +922,21 @@ def _observe_background_task(task):
 # ──────────────────────────────────────────────
 
 class _CHotPageLease:
-    def __init__(self, browser):
+    def __init__(self, browser, metrics=None):
         self.browser = browser
+        self.metrics = metrics
         self.context = None
         self.page = None
 
     async def __aenter__(self):
-        self.context, self.page = await _acquire_c_page(self.browser)
-        return self.page
+        started = time.time()
+        try:
+            self.context, self.page = await _acquire_c_page(self.browser, self.metrics)
+            return self.page
+        finally:
+            if self.metrics is not None:
+                self.metrics.c_page_acquire_count += 1
+                self.metrics.c_page_acquire_seconds += time.time() - started
 
     async def __aexit__(self, exc_type, exc, tb):
         await _release_c_page(self.context, self.page, healthy=exc_type is None)
@@ -934,11 +958,15 @@ async def _new_c_hot_page(browser):
     return context, page
 
 
-async def _acquire_c_page(browser):
+async def _acquire_c_page(browser, metrics=None):
     if C_HOT_PAGE_POOL:
         async with _c_hot_page_lock:
             if _c_hot_page_pool:
+                if metrics is not None:
+                    metrics.c_hot_page_hits += 1
                 return _c_hot_page_pool.pop()
+        if metrics is not None:
+            metrics.c_hot_page_misses += 1
         return await _new_c_hot_page(browser)
 
     page = await browser.new_page()
@@ -986,8 +1014,8 @@ async def _release_c_page(context, page, *, healthy):
             pass
 
 
-def _c_page_lease(browser):
-    return _CHotPageLease(browser)
+def _c_page_lease(browser, metrics=None):
+    return _CHotPageLease(browser, metrics)
 
 
 async def _close_c_hot_page_pool():
@@ -1012,7 +1040,11 @@ async def s_worker(wid, browser, inventory, physical_sem, t_slot_sem, metrics, a
             if admission_gate is not None:
                 t_lease = await admission_gate.acquire_t_production()
 
+            physical_wait_started = time.time()
             await physical_sem.acquire()
+            physical_hold_started = time.time()
+            metrics.s_physical_count += 1
+            metrics.s_physical_wait_seconds += physical_hold_started - physical_wait_started
             token = None
             trace = {}
             solve_started = time.time()
@@ -1021,6 +1053,7 @@ async def s_worker(wid, browser, inventory, physical_sem, t_slot_sem, metrics, a
             finally:
                 solve_elapsed = time.time() - solve_started
                 _record_solver_trace(metrics, trace, solve_elapsed, token)
+                metrics.s_physical_hold_seconds += time.time() - physical_hold_started
                 physical_sem.release()
 
             if token is None:
@@ -1085,12 +1118,17 @@ async def p_worker(
 
             requests = []
             for _ in range(batch_count):
+                email_started = time.time()
                 try:
                     handle, email, password = await _create_email_async(loop)
+                    metrics.p_email_create_count += 1
+                    metrics.p_email_create_seconds += time.time() - email_started
                     requests.append({"handle": handle, "email": email, "password": password})
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
+                    metrics.p_email_create_count += 1
+                    metrics.p_email_create_seconds += time.time() - email_started
                     log(f'[P] {wid} create email err: {str(e)[:60]}')
                     metrics.q_discarded += 1
                     q_pending_sem.release()
@@ -1102,7 +1140,7 @@ async def p_worker(
                 continue
 
             results = await _send_q_request_batch(
-                browser, physical_sem, p_send_sem, requests
+                browser, physical_sem, p_send_sem, requests, metrics
             )
             metrics.q_send_batches += 1
             metrics.q_send_batch_items += len(results)
@@ -1159,13 +1197,28 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
     code = pair.q.value['code']
     token = pair.t.value
 
+    physical_wait_started = time.time()
     await physical_sem.acquire()
+    physical_hold_started = time.time()
+    metrics.c_physical_count += 1
+    metrics.c_physical_wait_seconds += physical_hold_started - physical_wait_started
     t0 = time.time()
     try:
-        async with _c_page_lease(browser) as page:
+        async with _c_page_lease(browser, metrics) as page:
             sso = None
-            if await grpc_verify_code(page, email, code):
-                sso = await server_action_register(page, email, password, code, token)
+            verify_started = time.time()
+            try:
+                verified = await grpc_verify_code(page, email, code)
+            finally:
+                metrics.c_verify_count += 1
+                metrics.c_verify_seconds += time.time() - verify_started
+            if verified:
+                register_started = time.time()
+                try:
+                    sso = await server_action_register(page, email, password, code, token)
+                finally:
+                    metrics.c_register_count += 1
+                    metrics.c_register_seconds += time.time() - register_started
 
         if sso:
             elapsed = time.time() - t0
@@ -1184,6 +1237,7 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
         log(f'[✗] {email} register failed')
         return False
     finally:
+        metrics.c_physical_hold_seconds += time.time() - physical_hold_started
         physical_sem.release()
 
 

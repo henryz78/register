@@ -554,6 +554,54 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(physical_sem._value, 1)
         self.assertEqual(p_send_sem._value, 1)
 
+    async def test_send_q_request_batch_records_physical_and_stage_metrics(self):
+        async def fake_create_code(_page, _email):
+            return True
+
+        register.grpc_create_code = fake_create_code
+        browser = FakeBrowser()
+        physical_sem = asyncio.Semaphore(1)
+        p_send_sem = asyncio.Semaphore(1)
+        metrics = Metrics()
+
+        await register._send_q_request_batch(
+            browser,
+            physical_sem,
+            p_send_sem,
+            [{"handle": "h1", "email": "a@example.test", "password": "pw"}],
+            metrics,
+        )
+
+        self.assertEqual(metrics.p_physical_count, 1)
+        self.assertEqual(metrics.p_page_prepare_count, 1)
+        self.assertEqual(metrics.p_send_count, 1)
+        self.assertGreaterEqual(metrics.p_physical_wait_seconds, 0)
+        self.assertGreaterEqual(metrics.p_physical_hold_seconds, 0)
+
+    async def test_consume_pair_records_physical_and_stage_metrics(self):
+        async def ok_verify(*_args, **_kwargs):
+            return True
+
+        async def no_sso_register(*_args, **_kwargs):
+            return None
+
+        register.C_HOT_PAGE_POOL = False
+        register.grpc_verify_code = ok_verify
+        register.server_action_register = no_sso_register
+        register.log = lambda _msg: None
+        metrics = Metrics()
+
+        await register._consume_pair(
+            FakeBrowser(), asyncio.Semaphore(1), FakePair(), metrics
+        )
+
+        self.assertEqual(metrics.c_physical_count, 1)
+        self.assertEqual(metrics.c_page_acquire_count, 1)
+        self.assertEqual(metrics.c_verify_count, 1)
+        self.assertEqual(metrics.c_register_count, 1)
+        self.assertEqual(metrics.c_hot_page_hits, 0)
+        self.assertEqual(metrics.c_hot_page_misses, 0)
+
     async def test_poll_and_admit_q_releases_one_pending_per_terminal_request(self):
         register.P_REQUEST_TIMEOUT = 1
         register.poll_code = lambda _handle: None
@@ -647,6 +695,47 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("t_solve_avg:2.5", row)
         self.assertIn("t_solve_fail:1", row)
+
+    async def test_metrics_snapshot_includes_role_physical_and_stage_timing(self):
+        metrics = Metrics()
+        metrics.s_physical_count = 2
+        metrics.s_physical_wait_seconds = 1.0
+        metrics.s_physical_hold_seconds = 6.0
+        metrics.p_physical_count = 1
+        metrics.p_physical_wait_seconds = 0.2
+        metrics.p_physical_hold_seconds = 1.4
+        metrics.c_physical_count = 3
+        metrics.c_physical_wait_seconds = 0.9
+        metrics.c_physical_hold_seconds = 7.5
+        metrics.p_email_create_count = 2
+        metrics.p_email_create_seconds = 1.0
+        metrics.p_page_prepare_count = 1
+        metrics.p_page_prepare_seconds = 0.8
+        metrics.p_send_count = 1
+        metrics.p_send_seconds = 0.4
+        metrics.c_page_acquire_count = 2
+        metrics.c_page_acquire_seconds = 0.6
+        metrics.c_verify_count = 2
+        metrics.c_verify_seconds = 0.8
+        metrics.c_register_count = 2
+        metrics.c_register_seconds = 3.0
+        metrics.c_hot_page_hits = 4
+        metrics.c_hot_page_misses = 1
+        sems = {
+            "physical": asyncio.Semaphore(1),
+            "t_slot": asyncio.Semaphore(1),
+            "q_slot": asyncio.Semaphore(1),
+            "q_pending": asyncio.Semaphore(1),
+        }
+
+        row = metrics.snapshot(FakeInventory(), sems)
+
+        self.assertIn("s_phys:0.50/3.00", row)
+        self.assertIn("p_phys:0.20/1.40", row)
+        self.assertIn("c_phys:0.30/2.50", row)
+        self.assertIn("p_stage:0.50/0.80/0.40", row)
+        self.assertIn("c_stage:0.30/0.40/1.50", row)
+        self.assertIn("c_hot:4/1", row)
 
     async def test_record_solver_trace_accumulates_stage_metrics(self):
         metrics = Metrics()

@@ -16,6 +16,16 @@ class Metrics:
         'solver_goto_seconds', 'solver_inject_seconds', 'solver_initial_seconds',
         'solver_click_seconds', 'solver_wait_seconds', 'solver_reused_count',
         'solver_visible_frame_count',
+        's_physical_count', 's_physical_wait_seconds', 's_physical_hold_seconds',
+        'p_physical_count', 'p_physical_wait_seconds', 'p_physical_hold_seconds',
+        'c_physical_count', 'c_physical_wait_seconds', 'c_physical_hold_seconds',
+        'p_email_create_count', 'p_email_create_seconds',
+        'p_page_prepare_count', 'p_page_prepare_seconds',
+        'p_send_count', 'p_send_seconds',
+        'c_page_acquire_count', 'c_page_acquire_seconds',
+        'c_verify_count', 'c_verify_seconds',
+        'c_register_count', 'c_register_seconds',
+        'c_hot_page_hits', 'c_hot_page_misses',
         'q_sent', 'q_returned', 'q_admitted', 'q_claimed', 'q_expired', 'q_discarded',
         'q_send_batches', 'q_send_batch_items',
         'pair_claimed', 'pair_consumed_ok', 'pair_consumed_fail',
@@ -40,6 +50,29 @@ class Metrics:
         self.solver_wait_seconds = 0.0
         self.solver_reused_count = 0
         self.solver_visible_frame_count = 0
+        self.s_physical_count = 0
+        self.s_physical_wait_seconds = 0.0
+        self.s_physical_hold_seconds = 0.0
+        self.p_physical_count = 0
+        self.p_physical_wait_seconds = 0.0
+        self.p_physical_hold_seconds = 0.0
+        self.c_physical_count = 0
+        self.c_physical_wait_seconds = 0.0
+        self.c_physical_hold_seconds = 0.0
+        self.p_email_create_count = 0
+        self.p_email_create_seconds = 0.0
+        self.p_page_prepare_count = 0
+        self.p_page_prepare_seconds = 0.0
+        self.p_send_count = 0
+        self.p_send_seconds = 0.0
+        self.c_page_acquire_count = 0
+        self.c_page_acquire_seconds = 0.0
+        self.c_verify_count = 0
+        self.c_verify_seconds = 0.0
+        self.c_register_count = 0
+        self.c_register_seconds = 0.0
+        self.c_hot_page_hits = 0
+        self.c_hot_page_misses = 0
         # Q 生命周期
         self.q_sent = 0
         self.q_returned = 0
@@ -96,9 +129,24 @@ class Metrics:
             self.solver_visible_frame_count / self.t_solve_count
             if self.t_solve_count else 0
         )
-        p_send = sems.get("p_send")
+        s_phys_wait, s_phys_hold = self._avg_pair(
+            self.s_physical_wait_seconds, self.s_physical_hold_seconds, self.s_physical_count
+        )
+        p_phys_wait, p_phys_hold = self._avg_pair(
+            self.p_physical_wait_seconds, self.p_physical_hold_seconds, self.p_physical_count
+        )
+        c_phys_wait, c_phys_hold = self._avg_pair(
+            self.c_physical_wait_seconds, self.c_physical_hold_seconds, self.c_physical_count
+        )
+        p_email_create = self._avg(self.p_email_create_seconds, self.p_email_create_count)
+        p_page_prepare = self._avg(self.p_page_prepare_seconds, self.p_page_prepare_count)
+        p_send_stage = self._avg(self.p_send_seconds, self.p_send_count)
+        c_page_acquire = self._avg(self.c_page_acquire_seconds, self.c_page_acquire_count)
+        c_verify = self._avg(self.c_verify_seconds, self.c_verify_count)
+        c_register = self._avg(self.c_register_seconds, self.c_register_count)
+        p_send_sem = sems.get("p_send")
         admission = sems.get("admission")
-        p_send_part = f' p_send:{p_send._value}' if p_send is not None else ''
+        p_send_part = f' p_send:{p_send_sem._value}' if p_send_sem is not None else ''
         admission_part = (
             f' t_prog:{admission.t_in_progress} q_inflight:{admission.q_inflight}'
             if admission is not None else ''
@@ -108,6 +156,12 @@ class Metrics:
             f'phys:{sems["physical"]._value}{p_send_part} t_slot:{sems["t_slot"]._value} '
             f'q_slot:{sems["q_slot"]._value} q_pend:{sems["q_pending"]._value} '
             f'p_batch:{p_batch_avg:.1f}{admission_part} '
+            f's_phys:{s_phys_wait:.2f}/{s_phys_hold:.2f} '
+            f'p_phys:{p_phys_wait:.2f}/{p_phys_hold:.2f} '
+            f'c_phys:{c_phys_wait:.2f}/{c_phys_hold:.2f} '
+            f'p_stage:{p_email_create:.2f}/{p_page_prepare:.2f}/{p_send_stage:.2f} '
+            f'c_stage:{c_page_acquire:.2f}/{c_verify:.2f}/{c_register:.2f} '
+            f'c_hot:{self.c_hot_page_hits}/{self.c_hot_page_misses} '
             f't_solve_avg:{t_solve_avg:.1f} t_solve_fail:{self.t_solve_failed} '
             f'solver_goto:{solver_goto_avg:.2f} solver_inject:{solver_inject_avg:.2f} '
             f'solver_initial:{solver_initial_avg:.2f} solver_click:{solver_click_avg:.2f} '
@@ -118,3 +172,13 @@ class Metrics:
             f'pair:{self.pair_claimed} ok:{self.pair_consumed_ok} fail:{self.pair_consumed_fail} '
             f'rate:{rate:.1f}/min #{self.success_count}'
         )
+
+    @staticmethod
+    def _avg(total, count):
+        return total / count if count else 0
+
+    @staticmethod
+    def _avg_pair(wait_total, hold_total, count):
+        if not count:
+            return 0, 0
+        return wait_total / count, hold_total / count
