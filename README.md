@@ -78,6 +78,7 @@ EMAIL_API=http://127.0.0.1:8080
 | `T_SLOT_CAP` | `8` | token 缓冲容量 |
 | `Q_SLOT_CAP` | `8` | 验证码缓冲容量 |
 | `Q_PENDING_CAP` | `12` | 等待验证码返回的请求上限 |
+| `SOLVER_MOUSE_CLICK_RETRIES` | `3` | token 验证框中心点击次数，`0` 表示关闭 |
 | `PAGE_BLOCK_STATIC_ASSETS` | `0` | 可选：阻断部分静态资源，降低页面准备成本 |
 | `C_HOT_PAGE_POOL` | `0` | 可选：复用消费阶段页面，减少页面重建开销 |
 

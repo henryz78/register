@@ -31,6 +31,16 @@ class FakePage:
         self.waits = []
         self.evaluations = []
         self.route_calls = []
+        self.mouse = types.SimpleNamespace(
+            moves=[],
+            downs=0,
+            ups=0,
+            move=self._mouse_move,
+            down=self._mouse_down,
+            up=self._mouse_up,
+        )
+        self.turnstile_token = ""
+        self.turnstile_box = {"x": 160, "y": 45}
 
     async def set_viewport_size(self, size):
         self.viewport = size
@@ -51,6 +61,10 @@ class FakePage:
 
     async def evaluate(self, script):
         self.evaluations.append(script)
+        if "cf-turnstile-response" in script:
+            return self.turnstile_token
+        if "getBoundingClientRect" in script and ".cf-turnstile" in script:
+            return self.turnstile_box
         return None
 
     async def close(self):
@@ -59,6 +73,15 @@ class FakePage:
 
     async def route(self, pattern, handler):
         self.route_calls.append({"pattern": pattern, "handler": handler})
+
+    async def _mouse_move(self, x, y, steps=None):
+        self.mouse.moves.append({"x": x, "y": y, "steps": steps})
+
+    async def _mouse_down(self):
+        self.mouse.downs += 1
+
+    async def _mouse_up(self):
+        self.mouse.ups += 1
 
 
 class FakeContext:
@@ -675,6 +698,80 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(token, "token-value")
         self.assertEqual(calls, [True])
 
+    async def test_mouse_click_turnstile_retries_uses_center_clicks(self):
+        page = FakePage()
+
+        old_retries = getattr(register, "SOLVER_MOUSE_CLICK_RETRIES", None)
+        old_interval = getattr(register, "SOLVER_MOUSE_CLICK_INTERVAL_MS", None)
+        old_sleep = register.asyncio.sleep
+        try:
+            register.SOLVER_MOUSE_CLICK_RETRIES = 3
+            register.SOLVER_MOUSE_CLICK_INTERVAL_MS = 600
+
+            async def no_sleep(_seconds):
+                return None
+
+            register.asyncio.sleep = no_sleep
+
+            clicked = await register._repeat_mouse_click_turnstile(page)
+        finally:
+            register.asyncio.sleep = old_sleep
+            if old_retries is None:
+                delattr(register, "SOLVER_MOUSE_CLICK_RETRIES")
+            else:
+                register.SOLVER_MOUSE_CLICK_RETRIES = old_retries
+            if old_interval is None:
+                delattr(register, "SOLVER_MOUSE_CLICK_INTERVAL_MS")
+            else:
+                register.SOLVER_MOUSE_CLICK_INTERVAL_MS = old_interval
+
+        self.assertTrue(clicked)
+        self.assertEqual(page.mouse.downs, 3)
+        self.assertEqual(page.mouse.ups, 3)
+        self.assertEqual(page.mouse.moves[-1], {"x": 160, "y": 45, "steps": 8})
+
+    async def test_mouse_click_turnstile_stops_when_token_appears(self):
+        page = FakePage()
+        evaluate_count = 0
+        original_evaluate = page.evaluate
+
+        async def evaluate(script):
+            nonlocal evaluate_count
+            if "cf-turnstile-response" in script:
+                evaluate_count += 1
+                return "token-value-long" if evaluate_count > 1 else ""
+            return await original_evaluate(script)
+
+        page.evaluate = evaluate
+
+        old_retries = getattr(register, "SOLVER_MOUSE_CLICK_RETRIES", None)
+        old_interval = getattr(register, "SOLVER_MOUSE_CLICK_INTERVAL_MS", None)
+        old_sleep = register.asyncio.sleep
+        try:
+            register.SOLVER_MOUSE_CLICK_RETRIES = 3
+            register.SOLVER_MOUSE_CLICK_INTERVAL_MS = 600
+
+            async def no_sleep(_seconds):
+                return None
+
+            register.asyncio.sleep = no_sleep
+
+            clicked = await register._repeat_mouse_click_turnstile(page)
+        finally:
+            register.asyncio.sleep = old_sleep
+            if old_retries is None:
+                delattr(register, "SOLVER_MOUSE_CLICK_RETRIES")
+            else:
+                register.SOLVER_MOUSE_CLICK_RETRIES = old_retries
+            if old_interval is None:
+                delattr(register, "SOLVER_MOUSE_CLICK_INTERVAL_MS")
+            else:
+                register.SOLVER_MOUSE_CLICK_INTERVAL_MS = old_interval
+
+        self.assertTrue(clicked)
+        self.assertEqual(page.mouse.downs, 1)
+        self.assertEqual(evaluate_count, 2)
+
     async def test_prepare_signup_page_uses_configured_navigation_profile(self):
         page = FakePage()
 
@@ -718,6 +815,8 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_default_solver_and_page_latency_profile_matches_accepted_optimization(self):
         self.assertEqual(register.SOLVER_INITIAL_WAIT_MS, 500)
         self.assertTrue(register.SOLVER_FAST_CLICK)
+        self.assertEqual(register.SOLVER_MOUSE_CLICK_RETRIES, 3)
+        self.assertEqual(register.SOLVER_MOUSE_CLICK_INTERVAL_MS, 600)
         self.assertEqual(register.PAGE_GOTO_WAIT_UNTIL, "domcontentloaded")
         self.assertEqual(register.PAGE_POST_WAIT_MS, 500)
 

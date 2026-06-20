@@ -425,6 +425,8 @@ SOLVER_INITIAL_WAIT_MS = _env_int("SOLVER_INITIAL_WAIT_MS", 500)
 SOLVER_POLL_INTERVAL_MS = _env_int("SOLVER_POLL_INTERVAL_MS", 500)
 SOLVER_POLL_ATTEMPTS = _env_int("SOLVER_POLL_ATTEMPTS", 100)
 SOLVER_FAST_CLICK = (os.environ.get("SOLVER_FAST_CLICK", "1").strip().lower() not in ("0", "false", "no"))
+SOLVER_MOUSE_CLICK_RETRIES = _env_int("SOLVER_MOUSE_CLICK_RETRIES", 3)
+SOLVER_MOUSE_CLICK_INTERVAL_MS = _env_int("SOLVER_MOUSE_CLICK_INTERVAL_MS", 600)
 
 async def _get_solver_page(browser):
     if SOLVER_REUSE:
@@ -471,7 +473,60 @@ async def _has_visible_turnstile_frame(p):
         return False
 
 
+async def _read_turnstile_token(p):
+    try:
+        return await p.evaluate('document.querySelector("input[name=\\"cf-turnstile-response\\"]")?.value||""')
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return ""
+
+
+async def _mouse_click_turnstile_center(p):
+    box = await p.evaluate(
+        """() => {
+            const e = document.querySelector('.cf-turnstile');
+            if (!e) return null;
+            const r = e.getBoundingClientRect();
+            return {x: r.left + r.width / 2, y: r.top + r.height / 2};
+        }"""
+    )
+    if not box:
+        return False
+    x = float(box["x"])
+    y = float(box["y"])
+    await p.mouse.move(max(0, x - 25), max(0, y - 8))
+    await p.mouse.move(x, y, steps=8)
+    await p.mouse.down()
+    await asyncio.sleep(0.05)
+    await p.mouse.up()
+    return True
+
+
+async def _repeat_mouse_click_turnstile(p):
+    retries = max(0, SOLVER_MOUSE_CLICK_RETRIES)
+    if retries <= 0:
+        return False
+    clicked = False
+    interval = max(50, SOLVER_MOUSE_CLICK_INTERVAL_MS) / 1000.0
+    for i in range(retries):
+        token = await _read_turnstile_token(p)
+        if token and len(token) > 10:
+            return clicked
+        try:
+            clicked = await _mouse_click_turnstile_center(p) or clicked
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        if i != retries - 1:
+            await asyncio.sleep(interval)
+    return clicked
+
+
 async def _click_turnstile_if_possible(p, *, fast=False):
+    if SOLVER_MOUSE_CLICK_RETRIES > 0:
+        return await _repeat_mouse_click_turnstile(p)
     visible = await _has_visible_turnstile_frame(p)
     if fast and not visible:
         return visible
@@ -492,7 +547,7 @@ async def _poll_turnstile_token(p):
     for i in range(SOLVER_POLL_ATTEMPTS):
         await asyncio.sleep(max(50, SOLVER_POLL_INTERVAL_MS) / 1000)
         try:
-            t = await p.evaluate('document.querySelector("input[name=\\"cf-turnstile-response\\"]")?.value||""')
+            t = await _read_turnstile_token(p)
             if t and len(t) > 10:
                 return t
         except asyncio.CancelledError:
@@ -1224,6 +1279,10 @@ async def main():
     )
     log(f"  Workers: S={s_workers} P={p_workers} C={c_workers}")
     log(f"  Timeouts: P_Request={P_REQUEST_TIMEOUT}s  C_Consume={C_CONSUME_TIMEOUT}s")
+    log(
+        f"  SolverMouseClick: retries={SOLVER_MOUSE_CLICK_RETRIES} "
+        f"interval={SOLVER_MOUSE_CLICK_INTERVAL_MS}ms"
+    )
     if TARGET:
         log(f"  Target: {TARGET}")
     log("=" * 50)
