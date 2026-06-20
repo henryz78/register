@@ -132,11 +132,12 @@ C_SET_COOKIE_VIA_REQUEST=1
 - `.claude/worktrees/solver-multi-widget/tmp_turnstile_concurrency_click_probe.py`：比较 early 和 delayed 在并发 1/2/4/6 下的成功情况。它暴露了 early 在并发下不稳定。
 - `.claude/worktrees/solver-multi-widget/tmp_turnstile_production_timing_probe.py`：拆解一次 token 生产里的 iframe、input、response 出现时间，用来判断等待到底卡在哪个阶段。
 - `.claude/worktrees/solver-multi-widget/tmp_solver_staggered_multi_probe.py`、`tmp_solver_sequence_probe.py`、`tmp_solver_batch_native_probe.py`：验证同页多 widget、顺序 widget 和 staggered widget。结论是不适合作为主方向。
+- `.claude/worktrees/click-strategies/`：2026-06-20 A/B 实验。early-click lane 和 staggered 各有完整 10 分钟生产 run 日志。结论见上方"2026-06-20 A/B 验证结论"。
 
 后续如果在授权环境里继续做方向验证，只能把它当作隔离研究项：
 
-- `early-click solver lane`：只验证“少量隔离页面是否能稳定降低单个 token 等待”，不能改变主线 `S_Worker` 的默认路径。
-- `分组错峰点击`：只验证“错开发起和点击是否能降低并发冲突”，不能变成中心调度器，也不能动态调整全局并发。
+- `early-click solver lane`：只验证”少量隔离页面是否能稳定降低单个 token 等待”，不能改变主线 `S_Worker` 的默认路径。
+- `分组错峰点击`：只验证”错开发起和点击是否能降低并发冲突”，不能变成中心调度器，也不能动态调整全局并发。
 
 这两个方向的合并门槛很高。必须有真实 A/B 证明并发成功率、失败率、`t_solve_avg`、CPU/RSS 都优于当前默认路径，并且不破坏 [architecture.md](architecture.md) 的所有权和背压不变量。
 
@@ -146,6 +147,27 @@ C_SET_COOKIE_VIA_REQUEST=1
 2. 分组错峰是否只是改变日志形态，还是能真实提高 10 分钟窗口 `recent_ok_per_min`。
 
 如果答案不能由真实 A/B 日志支持，就不要继续调参数。
+
+### 2026-06-20 A/B 验证结论
+
+在远程测试服务器（2 vCPU / 7.6GB RAM, PHYSICAL_CAP=6, C_HOT_PAGE_POOL=1）上完成 10 分钟 A/B。
+
+**Early-click lane（SOLVER_EARLY_LANES=1, SOLVER_EARLY_CLICK_MS=750,2000）**：
+
+| 指标 | 基线 | Early-click | 变化 |
+|---|---|---|---|
+| 成功率 | 22.0/min | 21.3/min | -3.2% |
+| 成功数 | 223 | 216 | -3.1% |
+| t_solve_avg | 13.0s | 13.4s | +3.1% |
+| solver_click | 0.02s | 0.50s | +2400% |
+| solver_wait | 12.12s | 11.99s | -1.1% |
+| 失败数 | 0 | 0 | — |
+
+Early-click lane 单独看：24/24 成功（100%），平均 17.0s（比默认路径的 ~12s 慢 42%）。
+
+结论：**方向已否定**。早期点击没有降低 solver_wait（瓶颈阶段），反而增加了 solver_click 开销。整体吞吐下降。不合并。
+
+**分组错峰（SOLVER_STAGGER_MS=4000）**：跳过实际 A/B。此前探针已证明 staggered 只改变日志形态；在并发 2/4/6 下早期点击不稳定。错峰不解决根本问题（Turnstile 服务端延迟 ~12s），只增加启动冷启动时间。标记为**已否定**。
 
 ### 后端请求直接复刻
 
