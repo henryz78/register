@@ -33,6 +33,7 @@ from core.admission import AdmissionGate
 from core.envelope import ResourceEnvelope
 from core.inventory import Inventory
 from core.observer import Metrics
+from batch_paths import safe_run_label
 
 os.makedirs("keys", exist_ok=True)
 SITE_URL = "https://accounts.x.ai"
@@ -121,26 +122,17 @@ POLL_EXECUTOR = ThreadPoolExecutor(max_workers=32)
 
 def log(msg): print(msg, flush=True)
 def rand_str(n=15): return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
-def make_run_label(now=None, pid=None):
-    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(now or time.time()))
-    return f"run_{ts}_{pid or os.getpid()}"
-
-def _safe_run_label(label):
-    text = str(label or "").strip()
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-")
-    return text or make_run_label()
-
 def configure_output_paths(run_label=None, output_root=None, output_dir=None):
     """配置本次运行的独立输出目录。"""
     global RUN_LABEL, OUTPUT_ROOT, OUTPUT_DIR, GROK_OUTPUT_PATH, ACCOUNTS_OUTPUT_PATH
     explicit_output_dir = output_dir or os.environ.get("OUTPUT_DIR")
     if explicit_output_dir:
         OUTPUT_DIR = os.path.normpath(str(explicit_output_dir))
-        RUN_LABEL = os.path.basename(OUTPUT_DIR.rstrip("\\/")) or _safe_run_label(run_label or RUN_LABEL)
+        RUN_LABEL = os.path.basename(OUTPUT_DIR.rstrip("\\/")) or safe_run_label(run_label or RUN_LABEL)
         OUTPUT_ROOT = os.path.dirname(OUTPUT_DIR) or (output_root or OUTPUT_ROOT)
     else:
         OUTPUT_ROOT = os.path.normpath(str(output_root or OUTPUT_ROOT or "keys"))
-        RUN_LABEL = _safe_run_label(run_label or RUN_LABEL or os.environ.get("RUN_LABEL"))
+        RUN_LABEL = safe_run_label(run_label or RUN_LABEL or os.environ.get("RUN_LABEL"))
         OUTPUT_DIR = os.path.join(OUTPUT_ROOT, RUN_LABEL)
     GROK_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "grok.txt")
     ACCOUNTS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "accounts.txt")

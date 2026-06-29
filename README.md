@@ -161,6 +161,12 @@ python token_check.py --run-label test_001
 python token_check.py --input-file keys/test_001/grok.txt
 ```
 
+检测合并结果时显式指定文件：
+
+```bash
+python token_check.py --input-file keys/test_001/merged_tokens.txt
+```
+
 测活结果默认写入：
 
 ```text
@@ -179,6 +185,12 @@ keys/<run_label>/token_check_<timestamp>/
 
 `unknown_tokens.txt` 通常代表限流、接口波动或检测接口返回异常，建议降低 `--concurrency`、加大 `--interval` 后复测。
 
+默认会校验 TLS 证书。私有证书环境可显式加：
+
+```bash
+python token_check.py --run-label test_001 --insecure
+```
+
 ## 合并并推送到 grok2api
 
 先在 `.env` 配置 grok2api：
@@ -187,6 +199,7 @@ keys/<run_label>/token_check_<timestamp>/
 GROK2API_ENDPOINT=https://example.com/admin/api/tokens
 GROK2API_TOKEN=your_app_key
 GROK2API_APPEND=1
+GROK2API_INSECURE=0
 ```
 
 按批次合并并推送：
@@ -220,6 +233,29 @@ python merge_and_push.py --input-glob "keys/*/grok.txt" --output keys/merged_tok
 ```
 
 `GROK2API_APPEND=1` 时会先读取线上 token，和本次 token 去重合并后再推送。
+
+推送请求格式：
+
+```text
+Authorization: Bearer <GROK2API_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{"ssoBasic": ["token-a", "token-b"]}
+```
+
+覆盖线上列表：
+
+```bash
+python merge_and_push.py --run-label test_001 --replace
+```
+
+私有证书环境可显式跳过 grok2api TLS 校验：
+
+```bash
+python merge_and_push.py --run-label test_001 --insecure
+```
 
 ## 项目结构
 

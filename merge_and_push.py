@@ -5,26 +5,27 @@ import os
 from glob import glob
 from pathlib import Path
 
+from batch_paths import DEFAULT_OUTPUT_ROOT, grok_path, merged_tokens_path, safe_run_label
 from token_sync import collect_tokens_from_files, push_sso_to_api
 
 
-DEFAULT_DATA_DIR = "keys"
+DEFAULT_DATA_DIR = DEFAULT_OUTPUT_ROOT
 
 
 def resolve_input_paths(*, input_glob: str = "", run_label: str = "", data_dir: str = DEFAULT_DATA_DIR) -> list[str]:
     if input_glob:
         return sorted(glob(input_glob))
-    label = str(run_label or "").strip()
+    label = safe_run_label(run_label) if str(run_label or "").strip() else ""
     if not label:
         return []
-    return [str(Path(data_dir or DEFAULT_DATA_DIR) / label / "grok.txt")]
+    return [str(grok_path(label, data_dir or DEFAULT_DATA_DIR))]
 
 
 def default_output_path(*, run_label: str = "", data_dir: str = DEFAULT_DATA_DIR) -> str:
-    label = str(run_label or "").strip()
+    label = safe_run_label(run_label) if str(run_label or "").strip() else ""
     if not label:
         return ""
-    return str(Path(data_dir or DEFAULT_DATA_DIR) / label / "merged_tokens.txt")
+    return str(merged_tokens_path(label, data_dir or DEFAULT_DATA_DIR))
 
 
 def write_merged_tokens(tokens: list[str], output_path: str) -> None:
@@ -43,8 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="", help="可选：写出合并后的 token 文件")
     parser.add_argument("--endpoint", default="", help="grok2api /admin/api/tokens 完整地址；也可用 GROK2API_ENDPOINT")
     parser.add_argument("--api-token", default="", help="grok2api app_key；也可用 GROK2API_TOKEN")
-    parser.add_argument("--append", dest="append", action="store_true", default=True, help="先查询线上 token 再去重合并")
+    parser.set_defaults(append=None)
+    parser.add_argument("--append", dest="append", action="store_true", help="先查询线上 token 再去重合并")
     parser.add_argument("--replace", dest="append", action="store_false", help="用本次合并结果覆盖线上 token 列表")
+    parser.set_defaults(insecure=None)
+    parser.add_argument("--insecure", action="store_true", help="跳过 grok2api TLS 证书校验")
     parser.add_argument("--no-push", action="store_true", help="只合并写文件，跳过推送")
     return parser
 
@@ -80,6 +84,7 @@ def main(argv: list[str] | None = None, *, push_func=push_sso_to_api) -> int:
         endpoint=args.endpoint or None,
         api_token=args.api_token or None,
         append=args.append,
+        verify_tls=None if args.insecure is None else not args.insecure,
     )
     if result.get("pushed"):
         print(f"[*] SSO token 已推送到 API（共 {result.get('count', 0)} 个）")

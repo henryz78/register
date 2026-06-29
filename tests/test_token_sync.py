@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -68,6 +69,67 @@ class TokenSyncTests(unittest.TestCase):
 
         self.assertTrue(result["pushed"])
         self.assertEqual(posts[0]["json"], {"ssoBasic": ["old-token", "dup-token", "new-token"]})
+        self.assertEqual(posts[0]["verify"], True)
+
+    def test_push_sso_to_api_verifies_tls_by_default_for_append_get(self):
+        from token_sync import push_sso_to_api
+
+        verify_values = []
+
+        def fake_get(_url, **kwargs):
+            verify_values.append(("get", kwargs["verify"]))
+            return FakeResponse(payload={"ssoBasic": []})
+
+        def fake_post(_url, **kwargs):
+            verify_values.append(("post", kwargs["verify"]))
+            return FakeResponse(payload={"ok": True})
+
+        result = push_sso_to_api(
+            ["new-token"],
+            endpoint="https://api.example/admin/api/tokens",
+            api_token="secret",
+            append=True,
+            request_get=fake_get,
+            request_post=fake_post,
+        )
+
+        self.assertTrue(result["pushed"])
+        self.assertEqual(verify_values, [("get", True), ("post", True)])
+
+    def test_grok2api_append_env_zero_uses_replace_mode(self):
+        from token_sync import push_sso_to_api
+
+        old_value = os.environ.get("GROK2API_APPEND")
+        posts = []
+        get_called = False
+
+        def fake_get(_url, **_kwargs):
+            nonlocal get_called
+            get_called = True
+            return FakeResponse(payload={"ssoBasic": ["old-token"]})
+
+        def fake_post(_url, **kwargs):
+            posts.append(kwargs["json"])
+            return FakeResponse(payload={"ok": True})
+
+        try:
+            os.environ["GROK2API_APPEND"] = "0"
+            result = push_sso_to_api(
+                ["new-token"],
+                endpoint="https://api.example/admin/api/tokens",
+                api_token="secret",
+                request_get=fake_get,
+                request_post=fake_post,
+            )
+        finally:
+            if old_value is None:
+                os.environ.pop("GROK2API_APPEND", None)
+            else:
+                os.environ["GROK2API_APPEND"] = old_value
+
+        self.assertTrue(result["pushed"])
+        self.assertFalse(get_called)
+        self.assertEqual(posts, [{"ssoBasic": ["new-token"]}])
 
     def test_collect_tokens_from_files_dedupes_in_order(self):
         from token_sync import collect_tokens_from_files

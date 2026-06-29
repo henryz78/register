@@ -11,9 +11,10 @@ from glob import glob
 from pathlib import Path
 from typing import Callable, Iterable
 
+from batch_paths import DEFAULT_OUTPUT_ROOT, grok_path, safe_run_label
 
 DEFAULT_CHECK_URL = "https://grok.com/rest/app-chat/conversations?pageSize=1"
-DEFAULT_DATA_DIR = "keys"
+DEFAULT_DATA_DIR = DEFAULT_OUTPUT_ROOT
 ALIVE_FILE = "alive_tokens.txt"
 DEAD_FILE = "dead_tokens.txt"
 UNKNOWN_FILE = "unknown_tokens.txt"
@@ -58,6 +59,7 @@ def check_token(
     *,
     check_url: str = DEFAULT_CHECK_URL,
     timeout: float = 15,
+    verify_tls: bool = True,
     request_get: Callable | None = None,
 ) -> TokenCheckResult:
     normalized = str(token or "").strip()
@@ -67,9 +69,6 @@ def check_token(
     get = request_get
     if get is None:
         import requests
-        import urllib3
-
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         get = requests.get
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -81,7 +80,7 @@ def check_token(
             headers=headers,
             cookies={"sso": normalized},
             timeout=timeout,
-            verify=False,
+            verify=verify_tls,
         )
     except Exception as exc:
         return TokenCheckResult(normalized, "unknown", None, f"{type(exc).__name__}: {exc}")
@@ -148,11 +147,7 @@ def _resolve_run_label_input(run_label: str, data_dir: str) -> list[str]:
     label = str(run_label or "").strip()
     if not label:
         return []
-    base = Path(str(data_dir or DEFAULT_DATA_DIR))
-    candidates = [
-        base / label / "grok.txt",
-        base / label / "merged_tokens.txt",
-    ]
+    candidates = [grok_path(label, data_dir or DEFAULT_DATA_DIR)]
     return [str(path) for path in candidates if path.is_file()]
 
 
@@ -196,6 +191,7 @@ def check_tokens(
     concurrency: int = 3,
     interval: float = 1,
     timeout: float = 15,
+    verify_tls: bool = True,
     progress_callback: Callable[[int, int, TokenCheckResult], None] | None = None,
 ) -> list[TokenCheckResult]:
     if not tokens:
@@ -209,6 +205,7 @@ def check_tokens(
             token,
             check_url=check_url,
             timeout=timeout,
+            verify_tls=verify_tls,
         )
         if delay:
             time.sleep(delay)
@@ -236,7 +233,7 @@ def default_output_dir(run_label: str = "", *, data_dir: str = DEFAULT_DATA_DIR)
     suffix = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     label = str(run_label or "").strip()
     if label:
-        return str(Path(data_dir or DEFAULT_DATA_DIR) / label / f"token_check_{suffix}")
+        return str(Path(data_dir or DEFAULT_DATA_DIR) / safe_run_label(label) / f"token_check_{suffix}")
     return str(Path(data_dir or DEFAULT_DATA_DIR) / f"token_check_{suffix}")
 
 
@@ -251,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, default=3, help="并发请求数，默认 3")
     parser.add_argument("--interval", type=float, default=1, help="每个并发 worker 两次检测之间的等待秒数，默认 1")
     parser.add_argument("--timeout", type=float, default=15, help="单个请求超时秒数，默认 15")
+    parser.add_argument("--insecure", action="store_true", help="跳过 TLS 证书校验")
     return parser
 
 
@@ -305,6 +303,7 @@ def main() -> int:
         concurrency=args.concurrency,
         interval=args.interval,
         timeout=args.timeout,
+        verify_tls=not args.insecure,
         progress_callback=report_progress,
     )
     summary = write_check_outputs(results, output_dir, check_url=args.check_url)

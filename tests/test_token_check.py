@@ -74,6 +74,20 @@ class TokenCheckTests(unittest.TestCase):
         self.assertEqual(result.status, "unknown")
         self.assertIn("TimeoutError", result.reason)
 
+    def test_check_token_verifies_tls_by_default(self):
+        from token_check import check_token
+
+        verify_values = []
+
+        def requester(_url, **kwargs):
+            verify_values.append(kwargs["verify"])
+            return FakeResponse(200)
+
+        result = check_token("alive-token", request_get=requester)
+
+        self.assertEqual(result.status, "alive")
+        self.assertEqual(verify_values, [True])
+
     def test_write_outputs_groups_tokens_and_keeps_summary_token_free(self):
         from token_check import TokenCheckResult, write_check_outputs
 
@@ -142,6 +156,33 @@ class TokenCheckTests(unittest.TestCase):
             tokens = collect_input_tokens(run_label="batch-001", data_dir=tmp)
 
         self.assertEqual(tokens, ["token-a", "token-b"])
+
+    def test_run_label_reads_only_grok_file(self):
+        from token_check import collect_input_tokens
+
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_dir = pathlib.Path(tmp) / "batch-001"
+            batch_dir.mkdir()
+            (batch_dir / "grok.txt").write_text("batch-token\n", encoding="utf-8")
+            (batch_dir / "merged_tokens.txt").write_text("merged-token\n", encoding="utf-8")
+
+            tokens = collect_input_tokens(run_label="batch-001", data_dir=tmp)
+
+        self.assertEqual(tokens, ["batch-token"])
+
+    def test_run_label_uses_shared_sanitized_batch_name(self):
+        from token_check import collect_input_tokens, default_output_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_dir = pathlib.Path(tmp) / "batch_001"
+            batch_dir.mkdir()
+            (batch_dir / "grok.txt").write_text("token-a\n", encoding="utf-8")
+
+            tokens = collect_input_tokens(run_label="batch 001", data_dir=tmp)
+            output_dir = pathlib.Path(default_output_dir("batch 001", data_dir=tmp))
+
+        self.assertEqual(tokens, ["token-a"])
+        self.assertEqual(output_dir.parent.name, "batch_001")
 
     def test_default_output_dir_uses_batch_directory_for_run_label(self):
         from token_check import default_output_dir

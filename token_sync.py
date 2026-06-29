@@ -111,6 +111,7 @@ def resolve_api_config(
     endpoint: str | None = None,
     api_token: str | None = None,
     append: bool | None = None,
+    verify_tls: bool | None = None,
 ) -> dict:
     return {
         "endpoint": str(
@@ -126,6 +127,11 @@ def resolve_api_config(
             or ""
         ).strip(),
         "append": _env_bool("GROK2API_APPEND", True) if append is None else bool(append),
+        "verify_tls": (
+            not _env_bool("GROK2API_INSECURE", False)
+            if verify_tls is None
+            else bool(verify_tls)
+        ),
     }
 
 
@@ -147,13 +153,20 @@ def push_sso_to_api(
     endpoint: str | None = None,
     api_token: str | None = None,
     append: bool | None = None,
+    verify_tls: bool | None = None,
     request_get=None,
     request_post=None,
 ) -> dict:
-    config = resolve_api_config(endpoint=endpoint, api_token=api_token, append=append)
+    config = resolve_api_config(
+        endpoint=endpoint,
+        api_token=api_token,
+        append=append,
+        verify_tls=verify_tls,
+    )
     endpoint = config["endpoint"]
     api_token = config["api_token"]
     append_mode = config["append"]
+    verify_tls = config["verify_tls"]
     if not endpoint or not api_token:
         return {"pushed": False, "reason": "missing_config", "count": 0}
 
@@ -163,9 +176,6 @@ def push_sso_to_api(
 
     if request_get is None or request_post is None:
         import requests
-        import urllib3
-
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         request_get = request_get or requests.get
         request_post = request_post or requests.post
 
@@ -177,7 +187,7 @@ def push_sso_to_api(
     existing_tokens: list[str] = []
     if append_mode:
         try:
-            get_resp = request_get(endpoint, headers=headers, timeout=15, verify=False)
+            get_resp = request_get(endpoint, headers=headers, timeout=15, verify=verify_tls)
         except Exception as exc:
             return {"pushed": False, "reason": f"get_exception:{type(exc).__name__}", "count": 0}
         if getattr(get_resp, "status_code", 0) != 200:
@@ -198,7 +208,7 @@ def push_sso_to_api(
             json={"ssoBasic": tokens_to_push},
             headers=headers,
             timeout=60,
-            verify=False,
+            verify=verify_tls,
         )
     except Exception as exc:
         return {"pushed": False, "reason": f"post_exception:{type(exc).__name__}", "count": 0}
