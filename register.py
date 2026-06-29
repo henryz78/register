@@ -70,6 +70,8 @@ T_TARGET        = _env_int("T_TARGET", 4)            # token 池缓冲目标
 Q_TARGET        = _env_int("Q_TARGET", 4)            # 就绪验证码缓冲目标
 TARGET          = _env_int("TARGET", 0)              # 攒够 N 个号自动停(0=不限;--target N 可覆盖)
 LOG_VERBOSE     = _env_bool("LOG_VERBOSE", False)    # 1=输出调试指标长日志
+TARGET_OVERFLOW = _env_bool("TARGET_OVERFLOW", True) # 1=把目标外已完成账号保存到 overflow_* 文件
+TARGET_DRAIN_SECONDS = _env_int("TARGET_DRAIN_SECONDS", 8)  # 达标后等待在途任务收尾秒数
 
 # CSP 容量参数
 PHYSICAL_CAP    = _env_int("PHYSICAL_CAP", 0)        # 本地物理资源许可,0=自动派生
@@ -115,6 +117,7 @@ STATE_TREE = None
 
 start_time = time.time()
 success_count = 0
+overflow_count = 0
 file_lock = asyncio.Lock()
 STOP = asyncio.Event()
 OUTPUT_ROOT = (os.environ.get("OUTPUT_ROOT") or "keys").strip() or "keys"
@@ -122,6 +125,8 @@ RUN_LABEL = (os.environ.get("RUN_LABEL") or "").strip()
 OUTPUT_DIR = ""
 GROK_OUTPUT_PATH = ""
 ACCOUNTS_OUTPUT_PATH = ""
+OVERFLOW_GROK_OUTPUT_PATH = ""
+OVERFLOW_ACCOUNTS_OUTPUT_PATH = ""
 
 # 角色标识 + 轮询/HTTP 专用线程池（与 CPU 密集的浏览器操作解耦）
 SOLVE, PRODUCE, CONSUME, IDLE = 'SOLVE', 'PRODUCE', 'CONSUME', 'IDLE'
@@ -137,7 +142,9 @@ def _progress_text(count):
 def rand_str(n=15): return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
 def configure_output_paths(run_label=None, output_root=None, output_dir=None):
     """配置本次运行的独立输出目录。"""
-    global RUN_LABEL, OUTPUT_ROOT, OUTPUT_DIR, GROK_OUTPUT_PATH, ACCOUNTS_OUTPUT_PATH
+    global RUN_LABEL, OUTPUT_ROOT, OUTPUT_DIR
+    global GROK_OUTPUT_PATH, ACCOUNTS_OUTPUT_PATH
+    global OVERFLOW_GROK_OUTPUT_PATH, OVERFLOW_ACCOUNTS_OUTPUT_PATH
     explicit_output_dir = output_dir or os.environ.get("OUTPUT_DIR")
     if explicit_output_dir:
         OUTPUT_DIR = os.path.normpath(str(explicit_output_dir))
@@ -149,16 +156,26 @@ def configure_output_paths(run_label=None, output_root=None, output_dir=None):
         OUTPUT_DIR = os.path.join(OUTPUT_ROOT, RUN_LABEL)
     GROK_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "grok.txt")
     ACCOUNTS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "accounts.txt")
+    OVERFLOW_GROK_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "overflow_grok.txt")
+    OVERFLOW_ACCOUNTS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "overflow_accounts.txt")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     return {
         "run_label": RUN_LABEL,
         "output_dir": OUTPUT_DIR,
         "grok": GROK_OUTPUT_PATH,
         "accounts": ACCOUNTS_OUTPUT_PATH,
+        "overflow_grok": OVERFLOW_GROK_OUTPUT_PATH,
+        "overflow_accounts": OVERFLOW_ACCOUNTS_OUTPUT_PATH,
     }
 
 def ensure_output_paths():
-    if not OUTPUT_DIR or not GROK_OUTPUT_PATH or not ACCOUNTS_OUTPUT_PATH:
+    if (
+        not OUTPUT_DIR
+        or not GROK_OUTPUT_PATH
+        or not ACCOUNTS_OUTPUT_PATH
+        or not OVERFLOW_GROK_OUTPUT_PATH
+        or not OVERFLOW_ACCOUNTS_OUTPUT_PATH
+    ):
         return configure_output_paths()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     return {
@@ -166,6 +183,8 @@ def ensure_output_paths():
         "output_dir": OUTPUT_DIR,
         "grok": GROK_OUTPUT_PATH,
         "accounts": ACCOUNTS_OUTPUT_PATH,
+        "overflow_grok": OVERFLOW_GROK_OUTPUT_PATH,
+        "overflow_accounts": OVERFLOW_ACCOUNTS_OUTPUT_PATH,
     }
 
 def pb_varint(n):
@@ -1512,16 +1531,11 @@ async def p_worker(
 
 async def _consume_pair(browser, physical_sem, pair, metrics):
     """执行一次 C 消费。返回 True 表示已保存成功结果,False 表示失败,None 表示目标已满。"""
-    global success_count
+    global success_count, overflow_count
     email = pair.q.value['email']
     password = pair.q.value['password']
     code = pair.q.value['code']
     token = pair.t.value
-
-    if TARGET and metrics.success_count >= TARGET:
-        success_count = metrics.success_count
-        STOP.set()
-        return None
 
     physical_wait_started = time.time()
     await physical_sem.acquire()
@@ -1550,20 +1564,35 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
             elapsed = time.time() - t0
             paths = ensure_output_paths()
             async with file_lock:
-                if TARGET and metrics.success_count >= TARGET:
+                is_overflow = bool(TARGET and metrics.success_count >= TARGET)
+                if is_overflow:
                     success_count = metrics.success_count
+                    if not TARGET_OVERFLOW:
+                        STOP.set()
+                        verbose_log(f'[debug] 目标已满，跳过额外成功结果: {email}')
+                        return None
+                    with open(paths["overflow_grok"], "a", encoding="utf-8") as f:
+                        f.write(sso + "\n")
+                    with open(paths["overflow_accounts"], "a", encoding="utf-8") as f:
+                        f.write(f"{email}:{password}:{sso}\n")
+                    overflow_count += 1
+                    extra_count = overflow_count
                     STOP.set()
-                    verbose_log(f'[debug] 目标已满，跳过额外成功结果: {email}')
-                    return None
-                with open(paths["grok"], "a", encoding="utf-8") as f:
-                    f.write(sso + "\n")
-                with open(paths["accounts"], "a", encoding="utf-8") as f:
-                    f.write(f"{email}:{password}:{sso}\n")
-                metrics.success_count += 1
-                success_count = metrics.success_count
-                count = metrics.success_count
-                if TARGET and count >= TARGET:
-                    STOP.set()
+                else:
+                    with open(paths["grok"], "a", encoding="utf-8") as f:
+                        f.write(sso + "\n")
+                    with open(paths["accounts"], "a", encoding="utf-8") as f:
+                        f.write(f"{email}:{password}:{sso}\n")
+                    metrics.success_count += 1
+                    success_count = metrics.success_count
+                    count = metrics.success_count
+                    if TARGET and count >= TARGET:
+                        STOP.set()
+                    extra_count = 0
+            if is_overflow:
+                log(f'[+] 额外账号已保存 #{extra_count} | {os.path.basename(paths["overflow_accounts"])}')
+                verbose_log(f'[debug] 保存额外账号: {email}')
+                return None
             avg = (time.time() - metrics.start_time) / count
             log(f'[✓] 成功 {_progress_text(count)} | 本次 {elapsed:.1f}s | 平均 {avg:.1f}s')
             verbose_log(f'[debug] 保存账号: {email}')
@@ -1657,6 +1686,18 @@ async def _cancel_tasks(tasks):
             task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _drain_tasks(tasks, timeout):
+    pending = [task for task in tasks if not task.done()]
+    if not pending or timeout <= 0:
+        return 0
+    done, _pending = await asyncio.wait(
+        pending,
+        timeout=timeout,
+        return_when=asyncio.ALL_COMPLETED,
+    )
+    return len(done)
 
 
 # ──────────────────────────────────────────────
@@ -1826,6 +1867,10 @@ async def main():
         try:
             reason = await _wait_for_stop_or_worker_exit(tasks)
             if reason == "stop":
+                if TARGET_OVERFLOW and TARGET_DRAIN_SECONDS > 0:
+                    log(f'[*] 正在保存已完成的额外账号，最多等待 {TARGET_DRAIN_SECONDS}s...')
+                    drained = await _drain_tasks(tasks, TARGET_DRAIN_SECONDS)
+                    verbose_log(f'[debug] drain completed tasks={drained}')
                 log('[*] 正在停止后台任务...')
         except (KeyboardInterrupt, asyncio.CancelledError):
             log('[*] Shutting down...')

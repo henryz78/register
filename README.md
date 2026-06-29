@@ -2,7 +2,7 @@
 
 `grok-free-register` 是一个命令行注册工具。程序会启动本机浏览器，完成页面操作、邮箱验证码处理和结果保存。
 
-运行结果写入 `keys/<run_label>/` 目录。每次启动会自动生成新的批次目录。
+运行结果写入 `keys/<run_label>/` 目录。每次启动会自动生成新的批次目录，主结果和额外完成结果分开保存。
 
 ## 快速开始
 
@@ -21,7 +21,7 @@ bash run.sh
 
 ```bash
 bash run.sh                 # 按当前 .env 运行
-bash run.sh --target 100    # 最多保存 100 个成功账号
+bash run.sh --target 100    # 主结果最多保存 100 个成功账号
 bash run.sh --run-label test_001
 bash run.sh --max-mem 6G    # 自动估算并发时最多使用 6G 内存
 bash run.sh --verbose       # 显示调试指标长日志
@@ -83,7 +83,9 @@ EMAIL_API=http://127.0.0.1:8080
 | `EMAIL_MODE` | `tempmail` | 邮箱模式，支持 `tempmail` 和 `custom` |
 | `EMAIL_DOMAIN` | 空 | `custom` 模式使用的域名 |
 | `EMAIL_API` | `http://127.0.0.1:8080` | 本地收信服务地址 |
-| `TARGET` | `0` | 最多保存 N 个成功账号，`0` 表示不限 |
+| `TARGET` | `0` | 主结果最多保存 N 个成功账号，`0` 表示不限 |
+| `TARGET_OVERFLOW` | `1` | 达标后已完成账号写入 `overflow_*` 文件 |
+| `TARGET_DRAIN_SECONDS` | `8` | 达标后等待在途任务收尾秒数 |
 | `LOG_VERBOSE` | `0` | `1` 表示显示调试指标长日志 |
 | `RUN_LABEL` | 自动生成 | 本次运行批次名；结果写入 `keys/<RUN_LABEL>/` |
 | `OUTPUT_ROOT` | `keys` | 批次输出根目录 |
@@ -148,8 +150,10 @@ PY
 每次运行会写入独立批次目录：
 
 ```text
-keys/<run_label>/accounts.txt
-keys/<run_label>/grok.txt
+keys/<run_label>/accounts.txt           # 目标内账号
+keys/<run_label>/grok.txt               # 目标内 token
+keys/<run_label>/overflow_accounts.txt  # 目标外但已完成账号
+keys/<run_label>/overflow_grok.txt      # 目标外但已完成 token
 ```
 
 `accounts.txt` 每行格式：
@@ -157,6 +161,8 @@ keys/<run_label>/grok.txt
 ```text
 email:password:sso_token
 ```
+
+`TARGET=5` 时，`accounts.txt` 最多保存 5 行；并发任务已经完成的第 6 个、第 7 个结果会进入 `overflow_accounts.txt` 和 `overflow_grok.txt`。
 
 `keys/<run_label>/` 目录包含本次运行结果，默认不会提交到 Git。
 

@@ -19,6 +19,8 @@ CONFIG_FIELDS: tuple[EnvField, ...] = (
     EnvField("邮箱模式", "EMAIL_DOMAIN", "", "custom 模式域名，例如 example.com"),
     EnvField("邮箱模式", "EMAIL_API", "http://127.0.0.1:8080", "本地收信服务地址"),
     EnvField("运行目标", "TARGET", "0", "最多保存 N 个成功账号，0 表示不限"),
+    EnvField("运行目标", "TARGET_OVERFLOW", "1", "1=目标外已完成账号保存到 overflow 文件"),
+    EnvField("运行目标", "TARGET_DRAIN_SECONDS", "8", "达标后等待在途任务收尾秒数"),
     EnvField("日志", "LOG_VERBOSE", "0", "1=显示调试指标长日志，0=显示简洁日志"),
     EnvField("输出批次", "RUN_LABEL", "", "本次运行批次名，留空自动生成"),
     EnvField("输出批次", "OUTPUT_ROOT", "keys", "批次输出根目录"),

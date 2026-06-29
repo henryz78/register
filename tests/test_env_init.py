@@ -30,6 +30,8 @@ class EnvInitTests(unittest.TestCase):
         self.assertEqual(values["MIN_FREE_MEM_MB"], "500")
         self.assertEqual(values["OUTPUT_ROOT"], "keys")
         self.assertEqual(values["GROK2API_APPEND"], "1")
+        self.assertEqual(values["TARGET_OVERFLOW"], "1")
+        self.assertEqual(values["TARGET_DRAIN_SECONDS"], "8")
 
     def test_custom_env_prompts_all_fields_and_uses_enter_for_defaults(self):
         answers = iter([
@@ -38,6 +40,8 @@ class EnvInitTests(unittest.TestCase):
             "example.com",
             "http://127.0.0.1:8081",
             "25",
+            "1",
+            "6",
             "0",
             "batch_demo",
             "out",
@@ -60,6 +64,8 @@ class EnvInitTests(unittest.TestCase):
         self.assertEqual(values["EMAIL_DOMAIN"], "example.com")
         self.assertEqual(values["EMAIL_API"], "http://127.0.0.1:8081")
         self.assertEqual(values["TARGET"], "25")
+        self.assertEqual(values["TARGET_OVERFLOW"], "1")
+        self.assertEqual(values["TARGET_DRAIN_SECONDS"], "6")
         self.assertEqual(values["LOG_VERBOSE"], "0")
         self.assertEqual(values["RUN_LABEL"], "batch_demo")
         self.assertEqual(values["OUTPUT_ROOT"], "out")

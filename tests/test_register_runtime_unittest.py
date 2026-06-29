@@ -221,6 +221,11 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self._old_grok_output_path = getattr(register, "GROK_OUTPUT_PATH", None)
         self._old_accounts_output_path = getattr(register, "ACCOUNTS_OUTPUT_PATH", None)
         self._old_success_count = getattr(register, "success_count", None)
+        self._old_target_overflow = getattr(register, "TARGET_OVERFLOW", None)
+        self._old_target_drain_seconds = getattr(register, "TARGET_DRAIN_SECONDS", None)
+        self._old_overflow_count = getattr(register, "overflow_count", None)
+        self._old_overflow_grok_output_path = getattr(register, "OVERFLOW_GROK_OUTPUT_PATH", None)
+        self._old_overflow_accounts_output_path = getattr(register, "OVERFLOW_ACCOUNTS_OUTPUT_PATH", None)
 
     async def asyncTearDown(self):
         if hasattr(register, "_close_c_hot_page_pool"):
@@ -257,6 +262,8 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ("OUTPUT_DIR", self._old_output_dir),
             ("GROK_OUTPUT_PATH", self._old_grok_output_path),
             ("ACCOUNTS_OUTPUT_PATH", self._old_accounts_output_path),
+            ("OVERFLOW_GROK_OUTPUT_PATH", self._old_overflow_grok_output_path),
+            ("OVERFLOW_ACCOUNTS_OUTPUT_PATH", self._old_overflow_accounts_output_path),
         ):
             if value is None and hasattr(register, name):
                 delattr(register, name)
@@ -266,6 +273,15 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
             delattr(register, "success_count")
         elif self._old_success_count is not None:
             register.success_count = self._old_success_count
+        for name, value in (
+            ("TARGET_OVERFLOW", self._old_target_overflow),
+            ("TARGET_DRAIN_SECONDS", self._old_target_drain_seconds),
+            ("overflow_count", self._old_overflow_count),
+        ):
+            if value is None and hasattr(register, name):
+                delattr(register, name)
+            elif value is not None:
+                setattr(register, name, value)
 
     async def test_consume_pair_writes_success_to_configured_run_output_dir(self):
         async def ok_verify(*_args, **_kwargs):
@@ -331,7 +347,7 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with open(paths["accounts"], "r", encoding="utf-8") as f:
                 self.assertEqual(len(f.readlines()), 1)
 
-    async def test_consume_pair_does_not_write_past_target(self):
+    async def test_consume_pair_writes_overflow_after_target_is_full(self):
         async def ok_verify(*_args, **_kwargs):
             return True
 
@@ -340,7 +356,9 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         register.STOP = asyncio.Event()
         register.TARGET = 1
+        register.TARGET_OVERFLOW = True
         register.success_count = 1
+        register.overflow_count = 0
         register.grpc_verify_code = ok_verify
         register.server_action_register = ok_register
         register.log = lambda _msg: None
@@ -363,9 +381,55 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(ok)
             self.assertEqual(metrics.success_count, 1)
             self.assertEqual(register.success_count, 1)
+            self.assertEqual(register.overflow_count, 1)
             self.assertTrue(register.STOP.is_set())
             self.assertFalse(os.path.exists(paths["grok"]))
             self.assertFalse(os.path.exists(paths["accounts"]))
+            with open(paths["overflow_grok"], "r", encoding="utf-8") as f:
+                self.assertEqual(f.read(), "overflow-sso-token\n")
+            with open(paths["overflow_accounts"], "r", encoding="utf-8") as f:
+                self.assertEqual(f.read(), "e@example.test:pw:overflow-sso-token\n")
+
+    async def test_consume_pair_skips_overflow_when_disabled(self):
+        async def ok_verify(*_args, **_kwargs):
+            return True
+
+        async def ok_register(*_args, **_kwargs):
+            return "overflow-sso-token"
+
+        register.STOP = asyncio.Event()
+        register.TARGET = 1
+        register.TARGET_OVERFLOW = False
+        register.success_count = 1
+        register.overflow_count = 0
+        register.grpc_verify_code = ok_verify
+        register.server_action_register = ok_register
+        register.log = lambda _msg: None
+        metrics = Metrics()
+        metrics.success_count = 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = register.configure_output_paths(
+                run_label="batch-001",
+                output_root=tmp,
+            )
+
+            ok = await register._consume_pair(
+                FakeBrowser(),
+                asyncio.Semaphore(1),
+                FakePair(),
+                metrics,
+            )
+
+            self.assertIsNone(ok)
+            self.assertEqual(metrics.success_count, 1)
+            self.assertEqual(register.success_count, 1)
+            self.assertEqual(register.overflow_count, 0)
+            self.assertTrue(register.STOP.is_set())
+            self.assertFalse(os.path.exists(paths["grok"]))
+            self.assertFalse(os.path.exists(paths["accounts"]))
+            self.assertFalse(os.path.exists(paths["overflow_grok"]))
+            self.assertFalse(os.path.exists(paths["overflow_accounts"]))
 
     async def test_runtime_waiter_returns_when_stop_is_set(self):
         register.STOP = asyncio.Event()
@@ -386,6 +450,18 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await register._cancel_tasks([worker])
 
         self.assertTrue(worker.cancelled())
+
+    async def test_drain_tasks_waits_for_ready_workers(self):
+        async def worker():
+            await asyncio.sleep(0)
+            return "done"
+
+        task = asyncio.create_task(worker())
+
+        drained = await register._drain_tasks([task], timeout=1)
+
+        self.assertEqual(drained, 1)
+        self.assertTrue(task.done())
 
     async def test_human_status_hides_verbose_metric_keys(self):
         metrics = Metrics()
