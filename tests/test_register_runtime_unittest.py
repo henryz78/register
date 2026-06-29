@@ -219,7 +219,6 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self._old_output_dir = getattr(register, "OUTPUT_DIR", None)
         self._old_grok_output_path = getattr(register, "GROK_OUTPUT_PATH", None)
         self._old_accounts_output_path = getattr(register, "ACCOUNTS_OUTPUT_PATH", None)
-        self._old_success_count = getattr(register, "success_count", None)
 
     async def asyncTearDown(self):
         if hasattr(register, "_close_c_hot_page_pool"):
@@ -257,10 +256,6 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 delattr(register, name)
             elif value is not None:
                 setattr(register, name, value)
-        if self._old_success_count is None and hasattr(register, "success_count"):
-            delattr(register, "success_count")
-        elif self._old_success_count is not None:
-            register.success_count = self._old_success_count
 
     async def test_consume_pair_writes_success_to_configured_run_output_dir(self):
         async def ok_verify(*_args, **_kwargs):
@@ -292,42 +287,6 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(f.read(), "sso-token-value\n")
             with open(paths["accounts"], "r", encoding="utf-8") as f:
                 self.assertEqual(f.read(), "e@example.test:pw:sso-token-value\n")
-
-    async def test_consume_pair_does_not_write_past_target(self):
-        async def ok_verify(*_args, **_kwargs):
-            return True
-
-        async def ok_register(*_args, **_kwargs):
-            return "overflow-sso-token"
-
-        register.STOP = asyncio.Event()
-        register.TARGET = 1
-        register.success_count = 1
-        register.grpc_verify_code = ok_verify
-        register.server_action_register = ok_register
-        register.log = lambda _msg: None
-        metrics = Metrics()
-        metrics.success_count = 1
-
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = register.configure_output_paths(
-                run_label="batch-001",
-                output_root=tmp,
-            )
-
-            ok = await register._consume_pair(
-                FakeBrowser(),
-                asyncio.Semaphore(1),
-                FakePair(),
-                metrics,
-            )
-
-            self.assertFalse(ok)
-            self.assertEqual(metrics.success_count, 1)
-            self.assertEqual(register.success_count, 1)
-            self.assertTrue(register.STOP.is_set())
-            self.assertFalse(os.path.exists(paths["grok"]))
-            self.assertFalse(os.path.exists(paths["accounts"]))
 
     async def test_c_worker_timeout_releases_physical_and_pair_and_counts_failure(self):
         async def slow_verify(*_args, **_kwargs):

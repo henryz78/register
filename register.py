@@ -1494,17 +1494,12 @@ async def p_worker(
 
 
 async def _consume_pair(browser, physical_sem, pair, metrics):
-    """执行一次 C 消费。返回 True 表示已保存成功结果,False 表示消费失败或目标已满。"""
+    """执行一次 C 消费。返回 True 表示业务成功,False 表示消费失败。"""
     global success_count
     email = pair.q.value['email']
     password = pair.q.value['password']
     code = pair.q.value['code']
     token = pair.t.value
-
-    if TARGET and metrics.success_count >= TARGET:
-        success_count = metrics.success_count
-        STOP.set()
-        return False
 
     physical_wait_started = time.time()
     await physical_sem.acquire()
@@ -1533,11 +1528,6 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
             elapsed = time.time() - t0
             paths = ensure_output_paths()
             async with file_lock:
-                if TARGET and metrics.success_count >= TARGET:
-                    success_count = metrics.success_count
-                    STOP.set()
-                    log(f'[*] 已达目标 {TARGET} 个,跳过额外成功结果。')
-                    return False
                 with open(paths["grok"], "a", encoding="utf-8") as f:
                     f.write(sso + "\n")
                 with open(paths["accounts"], "a", encoding="utf-8") as f:
@@ -1545,8 +1535,6 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
                 metrics.success_count += 1
                 success_count = metrics.success_count
                 count = metrics.success_count
-                if TARGET and count >= TARGET:
-                    STOP.set()
             avg = (time.time() - metrics.start_time) / count
             log(f'[✓] {email} {elapsed:.1f}s avg:{avg:.1f}s #{count}')
             return True
