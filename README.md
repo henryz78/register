@@ -179,11 +179,55 @@ keys/<run_label>/token_check_<timestamp>/
 
 `unknown_tokens.txt` 通常代表限流、接口波动或检测接口返回异常，建议降低 `--concurrency`、加大 `--interval` 后复测。
 
+## 合并并推送到 grok2api
+
+先在 `.env` 配置 grok2api：
+
+```env
+GROK2API_ENDPOINT=https://example.com/admin/api/tokens
+GROK2API_TOKEN=your_app_key
+GROK2API_APPEND=1
+```
+
+按批次合并并推送：
+
+```bash
+python merge_and_push.py --run-label test_001
+```
+
+这会读取：
+
+```text
+keys/test_001/grok.txt
+```
+
+并写出：
+
+```text
+keys/test_001/merged_tokens.txt
+```
+
+也可以只合并写文件：
+
+```bash
+python merge_and_push.py --run-label test_001 --no-push
+```
+
+合并多个批次：
+
+```bash
+python merge_and_push.py --input-glob "keys/*/grok.txt" --output keys/merged_tokens.txt
+```
+
+`GROK2API_APPEND=1` 时会先读取线上 token，和本次 token 去重合并后再推送。
+
 ## 项目结构
 
 ```text
 register.py                 主运行入口
 token_check.py              批量检测 sso token 是否可用
+token_sync.py               grok2api token 查询 / 合并 / 推送逻辑
+merge_and_push.py           合并本地 token 并统一推送
 email_server.py             custom 模式的本地收信服务
 cloudflare/email-worker.js  Cloudflare Email Routing Worker 示例
 start.sh                    首次配置和运行
@@ -200,7 +244,7 @@ docs/architecture.md        并发架构说明
 快速检查：
 
 ```bash
-python3 -m unittest tests.test_admission_gate tests.test_register_runtime_unittest tests.test_inventory_unittest tests.test_runtime_log_analyzer tests.test_token_check -v
+python3 -m unittest tests.test_admission_gate tests.test_register_runtime_unittest tests.test_inventory_unittest tests.test_runtime_log_analyzer tests.test_token_check tests.test_token_sync tests.test_merge_and_push -v
 ```
 
 完整测试：
