@@ -1,51 +1,52 @@
 #!/bin/bash
-# 一键启动:自动装依赖 → 引导配置 → 运行
+# 初始化入口:自动装依赖 → 下载浏览器 → 生成 .env
 # 用法:
-#   bash start.sh              # 首次会引导选模式,之后直接启动
-#   bash start.sh --reconfig   # 重新选择邮箱模式
+#   bash start.sh              # 首次初始化；已有 .env 时保留
+#   bash start.sh --init       # 重新初始化 .env
+#   bash start.sh --reconfig   # 兼容旧命令，等同 --init
 set -e
 cd "$(dirname "$0")"
 
+force_init=0
+if [ "${1:-}" = "--init" ] || [ "${1:-}" = "--reconfig" ]; then
+    force_init=1
+    shift
+fi
+
+if [ $# -gt 0 ]; then
+    echo "start.sh 只负责初始化。运行注册服务请使用: bash run.sh $*"
+    exit 2
+fi
+
+echo "=== grok-free-register 初始化 ==="
+
 # 1) 依赖:没有 venv 就自动安装
 if [ ! -d .venv ]; then
-    echo "[*] 首次运行,安装依赖..."
+    echo "[1/3] 首次运行，安装依赖和浏览器..."
     bash setup.sh
+else
+    echo "[1/3] Python 环境已存在，跳过依赖安装。"
 fi
 
-# 2) 配置:无 .env 或显式 --reconfig 时进入引导
-if [ ! -f .env ] || [ "${1:-}" = "--reconfig" ]; then
-    echo ""
-    echo "选择邮箱模式:"
-    echo "  [1] 免费临时邮箱           (默认 · 零配置 · 直接回车 · 多 provider 自动 fallback)"
-    echo "  [2] 自建域名邮箱           (需 Cloudflare Email Routing + 本地 webhook)"
-    read -rp "输入 1 或 2 [1]: " mode || mode=1
-    if [ "$mode" = "2" ]; then
-        read -rp "  你的域名 (如 example.com): " domain
-        read -rp "  webhook 地址 [http://127.0.0.1:8080]: " api
-        api=${api:-http://127.0.0.1:8080}
-        cat > .env <<ENV
-EMAIL_MODE=custom
-EMAIL_DOMAIN=${domain}
-EMAIL_API=${api}
-# CSP 容量(可选,0=按 CPU/内存启动期静态派生)
-# PHYSICAL_CAP=0
-# PHYSICAL_PER_CPU=2
-# PHYSICAL_MEM_MB=512
-# MIN_FREE_MEM_MB=500
-ENV
-        echo ""
-        echo "[!] custom 模式还需在另一终端运行收信服务:"
-        echo "      .venv/bin/python email_server.py"
-        echo "    并按 README「自建邮箱模式」配置 Cloudflare Email Worker。"
+# 2) 浏览器:已有 venv 时也检查 CloakBrowser Chromium
+echo "[2/3] 检查 CloakBrowser Chromium..."
+if ! .venv/bin/python -m cloakbrowser info >/dev/null 2>&1; then
+    echo "[*] 未找到 CloakBrowser Chromium，开始下载..."
+    .venv/bin/python -m cloakbrowser install
+fi
+
+# 3) 配置:.env 缺失或显式 --init 时进入初始化
+echo "[3/3] 初始化 .env 配置..."
+if [ ! -f .env ] || [ "$force_init" = "1" ]; then
+    if [ "$force_init" = "1" ]; then
+        .venv/bin/python init_env.py --force
     else
-        echo "EMAIL_MODE=tempmail" > .env
+        .venv/bin/python init_env.py
     fi
-    echo "[*] 已写入 .env"
+else
+    echo "[*] 已存在 .env，保留当前配置。需要重置请执行: bash start.sh --init"
 fi
 
-# --reconfig 不传给 register.py
-[ "${1:-}" = "--reconfig" ] && shift || true
-
-# 3) 运行
-echo "[*] 启动注册机... (Ctrl-C 停止;成功账号写入 keys/<run_label>/accounts.txt)"
-exec .venv/bin/python register.py "$@"
+echo ""
+echo "[*] 初始化完成。"
+echo "下一步运行: bash run.sh"

@@ -10,9 +10,12 @@
 git clone https://github.com/hechuyi/grok-free-register.git
 cd grok-free-register
 bash start.sh
+bash run.sh
 ```
 
-首次运行会自动创建 `.venv`、安装依赖、下载 CloakBrowser Chromium，并引导生成 `.env`。运行时如果缺少浏览器，也会自动下载 CloakBrowser Chromium。
+`start.sh` 负责初始化：创建 `.venv`、安装依赖、下载 CloakBrowser Chromium，并生成正式 `.env`。`run.sh` 负责按当前 `.env` 启动注册。
+
+初始化时可以一路回车使用默认配置；默认并发 `PHYSICAL_CAP=0`，程序启动时会按本机 CPU 和内存自动估算浏览器并发。需要逐项自定义时，选择「逐项自定义全部配置」。
 
 常用命令：
 
@@ -21,7 +24,8 @@ bash run.sh                 # 按当前 .env 运行
 bash run.sh --target 100    # 成功 100 个后停止
 bash run.sh --run-label test_001
 bash run.sh --max-mem 6G    # 自动估算并发时最多使用 6G 内存
-bash start.sh --reconfig    # 重新选择邮箱模式
+bash start.sh --init        # 重新初始化 .env
+bash start.sh --reconfig    # 兼容旧命令，等同 --init
 ```
 
 浏览器文件异常时，可手动修复：
@@ -273,9 +277,10 @@ token_sync.py               grok2api token 查询 / 合并 / 推送逻辑
 merge_and_push.py           合并本地 token 并统一推送
 email_server.py             custom 模式的本地收信服务
 cloudflare/email-worker.js  Cloudflare Email Routing Worker 示例
-start.sh                    首次配置和运行
-run.sh                      按当前配置运行
+start.sh                    初始化依赖、浏览器和 .env
+run.sh                      按当前配置运行注册服务
 setup.sh                    安装依赖
+init_env.py                 .env 初始化向导
 .env.example                配置模板
 runtime_log_analyzer.py     运行日志分析工具
 tests/                      自动化测试
