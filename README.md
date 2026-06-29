@@ -147,10 +147,43 @@ email:password:sso_token
 
 `keys/<run_label>/` 目录包含本次运行结果，默认不会提交到 Git。
 
+## Token 测活
+
+按批次检测本次生成的 `sso` token：
+
+```bash
+python token_check.py --run-label test_001
+```
+
+也可以直接指定输入文件：
+
+```bash
+python token_check.py --input-file keys/test_001/grok.txt
+```
+
+测活结果默认写入：
+
+```text
+keys/<run_label>/token_check_<timestamp>/
+  alive_tokens.txt
+  dead_tokens.txt
+  unknown_tokens.txt
+  token_check_summary.json
+```
+
+分类规则：
+
+- HTTP 200 且响应像 JSON：写入 `alive_tokens.txt`
+- HTTP 401，或响应像 JSON 的 HTTP 403：写入 `dead_tokens.txt`
+- HTTP 429、5xx、超时、非 JSON 200、非 JSON 403：写入 `unknown_tokens.txt`
+
+`unknown_tokens.txt` 通常代表限流、接口波动或检测接口返回异常，建议降低 `--concurrency`、加大 `--interval` 后复测。
+
 ## 项目结构
 
 ```text
 register.py                 主运行入口
+token_check.py              批量检测 sso token 是否可用
 email_server.py             custom 模式的本地收信服务
 cloudflare/email-worker.js  Cloudflare Email Routing Worker 示例
 start.sh                    首次配置和运行
@@ -167,7 +200,7 @@ docs/architecture.md        并发架构说明
 快速检查：
 
 ```bash
-python3 -m unittest tests.test_admission_gate tests.test_register_runtime_unittest tests.test_inventory_unittest tests.test_runtime_log_analyzer -v
+python3 -m unittest tests.test_admission_gate tests.test_register_runtime_unittest tests.test_inventory_unittest tests.test_runtime_log_analyzer tests.test_token_check -v
 ```
 
 完整测试：
