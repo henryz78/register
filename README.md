@@ -2,7 +2,7 @@
 
 `grok-free-register` 是一个命令行注册工具。程序会启动本机浏览器，完成页面操作、邮箱验证码处理和结果保存。
 
-运行结果写入 `keys/` 目录。
+运行结果写入 `keys/<run_label>/` 目录。每次启动会自动生成新的批次目录。
 
 ## 快速开始
 
@@ -19,6 +19,7 @@ bash start.sh
 ```bash
 bash run.sh                 # 按当前 .env 运行
 bash run.sh --target 100    # 成功 100 个后停止
+bash run.sh --run-label test_001
 bash run.sh --max-mem 6G    # 自动估算并发时最多使用 6G 内存
 bash start.sh --reconfig    # 重新选择邮箱模式
 ```
@@ -71,6 +72,9 @@ EMAIL_API=http://127.0.0.1:8080
 | `EMAIL_DOMAIN` | 空 | `custom` 模式使用的域名 |
 | `EMAIL_API` | `http://127.0.0.1:8080` | 本地收信服务地址 |
 | `TARGET` | `0` | 成功数量目标，`0` 表示不限 |
+| `RUN_LABEL` | 自动生成 | 本次运行批次名；结果写入 `keys/<RUN_LABEL>/` |
+| `OUTPUT_ROOT` | `keys` | 批次输出根目录 |
+| `OUTPUT_DIR` | 空 | 指定完整输出目录；优先级高于 `OUTPUT_ROOT` / `RUN_LABEL` |
 | `PHYSICAL_CAP` | `0` | 浏览器并发上限，`0` 表示启动时自动估算 |
 | `PHYSICAL_PER_CPU` | `2` | 自动估算时每个 CPU 核心对应的并发参考值 |
 | `PHYSICAL_MEM_MB` | `512` | 自动估算时每个浏览器任务的内存预算 |
@@ -128,11 +132,11 @@ PY
 
 ## 输出文件
 
-成功结果写入：
+每次运行会写入独立批次目录：
 
 ```text
-keys/accounts.txt
-keys/grok.txt
+keys/<run_label>/accounts.txt
+keys/<run_label>/grok.txt
 ```
 
 `accounts.txt` 每行格式：
@@ -141,7 +145,7 @@ keys/grok.txt
 email:password:sso_token
 ```
 
-`keys/` 目录包含运行结果，默认不会提交到 Git。
+`keys/<run_label>/` 目录包含本次运行结果，默认不会提交到 Git。
 
 ## 项目结构
 

@@ -12,7 +12,7 @@ Grok Free Register — CSP 异步并发架构
   - custom: 自建域名邮箱,Cloudflare Email Routing → Worker → 本地 webhook
             (见 email_server.py / cloudflare/email-worker.js)
 
-配置全部走环境变量 / .env(见 .env.example);CLI: --max-mem 6G --target 100
+配置全部走环境变量 / .env(见 .env.example);CLI: --max-mem 6G --target 100 --run-label batch_001
 用法:
   bash start.sh          # 一键引导
   python register.py
@@ -109,6 +109,11 @@ start_time = time.time()
 success_count = 0
 file_lock = asyncio.Lock()
 STOP = asyncio.Event()
+OUTPUT_ROOT = (os.environ.get("OUTPUT_ROOT") or "keys").strip() or "keys"
+RUN_LABEL = (os.environ.get("RUN_LABEL") or "").strip()
+OUTPUT_DIR = ""
+GROK_OUTPUT_PATH = ""
+ACCOUNTS_OUTPUT_PATH = ""
 
 # 角色标识 + 轮询/HTTP 专用线程池（与 CPU 密集的浏览器操作解耦）
 SOLVE, PRODUCE, CONSUME, IDLE = 'SOLVE', 'PRODUCE', 'CONSUME', 'IDLE'
@@ -116,6 +121,48 @@ POLL_EXECUTOR = ThreadPoolExecutor(max_workers=32)
 
 def log(msg): print(msg, flush=True)
 def rand_str(n=15): return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
+def make_run_label(now=None, pid=None):
+    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(now or time.time()))
+    return f"run_{ts}_{pid or os.getpid()}"
+
+def _safe_run_label(label):
+    text = str(label or "").strip()
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-")
+    return text or make_run_label()
+
+def configure_output_paths(run_label=None, output_root=None, output_dir=None):
+    """配置本次运行的独立输出目录。"""
+    global RUN_LABEL, OUTPUT_ROOT, OUTPUT_DIR, GROK_OUTPUT_PATH, ACCOUNTS_OUTPUT_PATH
+    explicit_output_dir = output_dir or os.environ.get("OUTPUT_DIR")
+    if explicit_output_dir:
+        OUTPUT_DIR = os.path.normpath(str(explicit_output_dir))
+        RUN_LABEL = os.path.basename(OUTPUT_DIR.rstrip("\\/")) or _safe_run_label(run_label or RUN_LABEL)
+        OUTPUT_ROOT = os.path.dirname(OUTPUT_DIR) or (output_root or OUTPUT_ROOT)
+    else:
+        OUTPUT_ROOT = os.path.normpath(str(output_root or OUTPUT_ROOT or "keys"))
+        RUN_LABEL = _safe_run_label(run_label or RUN_LABEL or os.environ.get("RUN_LABEL"))
+        OUTPUT_DIR = os.path.join(OUTPUT_ROOT, RUN_LABEL)
+    GROK_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "grok.txt")
+    ACCOUNTS_OUTPUT_PATH = os.path.join(OUTPUT_DIR, "accounts.txt")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    return {
+        "run_label": RUN_LABEL,
+        "output_dir": OUTPUT_DIR,
+        "grok": GROK_OUTPUT_PATH,
+        "accounts": ACCOUNTS_OUTPUT_PATH,
+    }
+
+def ensure_output_paths():
+    if not OUTPUT_DIR or not GROK_OUTPUT_PATH or not ACCOUNTS_OUTPUT_PATH:
+        return configure_output_paths()
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    return {
+        "run_label": RUN_LABEL,
+        "output_dir": OUTPUT_DIR,
+        "grok": GROK_OUTPUT_PATH,
+        "accounts": ACCOUNTS_OUTPUT_PATH,
+    }
+
 def pb_varint(n):
     parts = []
     while n > 0x7f: parts.append((n & 0x7f) | 0x80); n >>= 7
@@ -1463,10 +1510,11 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
 
         if sso:
             elapsed = time.time() - t0
+            paths = ensure_output_paths()
             async with file_lock:
-                with open("keys/grok.txt", "a") as f:
+                with open(paths["grok"], "a", encoding="utf-8") as f:
                     f.write(sso + "\n")
-                with open("keys/accounts.txt", "a") as f:
+                with open(paths["accounts"], "a", encoding="utf-8") as f:
                     f.write(f"{email}:{password}:{sso}\n")
                 metrics.success_count += 1
                 success_count = metrics.success_count
@@ -1528,11 +1576,41 @@ async def monitor(inventory, sems, metrics, interval=8):
 async def main():
     global TARGET, _c_hot_page_pool_size
     max_mem_arg = None
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == '--max-mem' and i + 1 < len(sys.argv):
-            max_mem_arg = sys.argv[i + 1]
-        elif arg == '--target' and i + 1 < len(sys.argv):
-            TARGET = int(sys.argv[i + 1])
+    run_label_arg = None
+    output_dir_arg = None
+    output_root_arg = None
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if arg == '--max-mem' and nxt is not None:
+            max_mem_arg = nxt
+            i += 2
+            continue
+        if arg == '--target' and nxt is not None:
+            TARGET = int(nxt)
+            i += 2
+            continue
+        if arg == '--run-label' and nxt is not None:
+            run_label_arg = nxt
+            i += 2
+            continue
+        if arg == '--output-dir' and nxt is not None:
+            output_dir_arg = nxt
+            i += 2
+            continue
+        if arg == '--output-root' and nxt is not None:
+            output_root_arg = nxt
+            i += 2
+            continue
+        i += 1
+
+    output_paths = configure_output_paths(
+        run_label=run_label_arg,
+        output_root=output_root_arg,
+        output_dir=output_dir_arg,
+    )
 
     resources = get_system_resources(max_mem_arg)
     cpu = resources['cpu']
@@ -1561,6 +1639,8 @@ async def main():
     if capacity_profile:
         log(f"  CapacityProfile: {CAPACITY_PROFILE} physical_cap={capacity_profile.get('physical_cap')}")
     log(f"  EmailMode: {EMAIL_MODE}" + (f" ({EMAIL_DOMAIN})" if EMAIL_MODE == 'custom' else ""))
+    log(f"  RunLabel: {output_paths['run_label']}")
+    log(f"  OutputDir: {output_paths['output_dir']}")
     log(f"  Physical_Sem={physical_cap}  T_Slot={T_SLOT_CAP}  Q_Slot={Q_SLOT_CAP}  Q_Pending={Q_PENDING_CAP}")
     log(
         f"  Admission: T_LOW/HIGH={admission_watermarks['t_low']}/{admission_watermarks['t_high']}  "

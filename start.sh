@@ -47,5 +47,5 @@ fi
 [ "${1:-}" = "--reconfig" ] && shift || true
 
 # 3) 运行
-echo "[*] 启动注册机... (Ctrl-C 停止;成功账号写入 keys/accounts.txt)"
+echo "[*] 启动注册机... (Ctrl-C 停止;成功账号写入 keys/<run_label>/accounts.txt)"
 exec .venv/bin/python register.py "$@"

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import types
@@ -212,6 +213,11 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self._old_c_hot_page_pool = getattr(register, "C_HOT_PAGE_POOL", None)
         self._old_c_hot_page_pool_size = getattr(register, "C_HOT_PAGE_POOL_SIZE", None)
         self._old_c_set_cookie_via_request = getattr(register, "C_SET_COOKIE_VIA_REQUEST", None)
+        self._old_output_root = getattr(register, "OUTPUT_ROOT", None)
+        self._old_run_label = getattr(register, "RUN_LABEL", None)
+        self._old_output_dir = getattr(register, "OUTPUT_DIR", None)
+        self._old_grok_output_path = getattr(register, "GROK_OUTPUT_PATH", None)
+        self._old_accounts_output_path = getattr(register, "ACCOUNTS_OUTPUT_PATH", None)
 
     async def asyncTearDown(self):
         if hasattr(register, "_close_c_hot_page_pool"):
@@ -238,6 +244,48 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
             delattr(register, "C_SET_COOKIE_VIA_REQUEST")
         elif self._old_c_set_cookie_via_request is not None:
             register.C_SET_COOKIE_VIA_REQUEST = self._old_c_set_cookie_via_request
+        for name, value in (
+            ("OUTPUT_ROOT", self._old_output_root),
+            ("RUN_LABEL", self._old_run_label),
+            ("OUTPUT_DIR", self._old_output_dir),
+            ("GROK_OUTPUT_PATH", self._old_grok_output_path),
+            ("ACCOUNTS_OUTPUT_PATH", self._old_accounts_output_path),
+        ):
+            if value is None and hasattr(register, name):
+                delattr(register, name)
+            elif value is not None:
+                setattr(register, name, value)
+
+    async def test_consume_pair_writes_success_to_configured_run_output_dir(self):
+        async def ok_verify(*_args, **_kwargs):
+            return True
+
+        async def ok_register(*_args, **_kwargs):
+            return "sso-token-value"
+
+        register.grpc_verify_code = ok_verify
+        register.server_action_register = ok_register
+        register.log = lambda _msg: None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = register.configure_output_paths(
+                run_label="batch-001",
+                output_root=tmp,
+            )
+
+            ok = await register._consume_pair(
+                FakeBrowser(),
+                asyncio.Semaphore(1),
+                FakePair(),
+                Metrics(),
+            )
+
+            self.assertTrue(ok)
+            self.assertEqual(paths["output_dir"], os.path.join(tmp, "batch-001"))
+            with open(paths["grok"], "r", encoding="utf-8") as f:
+                self.assertEqual(f.read(), "sso-token-value\n")
+            with open(paths["accounts"], "r", encoding="utf-8") as f:
+                self.assertEqual(f.read(), "e@example.test:pw:sso-token-value\n")
 
     async def test_c_worker_timeout_releases_physical_and_pair_and_counts_failure(self):
         async def slow_verify(*_args, **_kwargs):
@@ -493,11 +541,12 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(explicit, 5)
 
     async def test_load_capacity_profile_reads_valid_physical_cap(self):
-        with tempfile.NamedTemporaryFile("w+", delete=True) as f:
-            json.dump({"physical_cap": 7}, f)
-            f.flush()
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = os.path.join(tmp, "capacity.json")
+            with open(profile_path, "w", encoding="utf-8") as f:
+                json.dump({"physical_cap": 7}, f)
 
-            profile = register.load_capacity_profile(f.name)
+            profile = register.load_capacity_profile(profile_path)
 
         self.assertEqual(profile["physical_cap"], 7)
         self.assertEqual(register.load_capacity_profile("/does/not/exist"), {})
