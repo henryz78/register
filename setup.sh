@@ -8,7 +8,7 @@ echo "=== Grok Free Register 安装 ==="
 
 # 检测系统
 if [ -f /etc/debian_version ]; then
-    echo "[1/3] 安装系统依赖 (Debian/Ubuntu)..."
+    echo "[1/4] 安装系统依赖 (Debian/Ubuntu)..."
     sudo apt update -qq
     sudo apt install -y -qq \
         python3 python3-pip python3-venv \
@@ -20,26 +20,29 @@ if [ -f /etc/debian_version ]; then
     # 兼容旧版 Ubuntu
     sudo apt install -y -qq libatk1.0-0 libatk-bridge2.0-0 libcups2 libasound2 2>/dev/null || true
 elif [ -f /etc/redhat-release ]; then
-    echo "[1/3] 安装系统依赖 (RHEL/CentOS)..."
+    echo "[1/4] 安装系统依赖 (RHEL/CentOS)..."
     sudo yum install -y -q \
         python3 python3-pip \
         atk cups-libs libdrm libXcomposite libXdamage libXfixes libXrandr \
         mesa-libgbm pango cairo alsa-lib nspr nss libxshmfence \
         2>/dev/null || true
 else
-    echo "[1/3] 未知系统，跳过系统依赖（如 Chrome 启动失败请手动安装）"
+    echo "[1/4] 未知系统，跳过系统依赖（如 Chrome 启动失败请手动安装）"
 fi
 
 # Python 虚拟环境
-echo "[2/3] 创建 Python 环境..."
+echo "[2/4] 创建 Python 环境..."
 python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
+echo "[3/4] 安装 CloakBrowser Chromium..."
+.venv/bin/python -m cloakbrowser install
+
 # 创建输出目录
 mkdir -p keys
 
-echo "[3/3] 安装完成！"
+echo "[4/4] 安装完成！"
 echo ""
 echo "运行: .venv/bin/python register.py"
 echo "或:  bash run.sh"

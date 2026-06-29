@@ -17,7 +17,7 @@ Grok Free Register — CSP 异步并发架构
   bash start.sh          # 一键引导
   python register.py
 """
-import os, json, random, string, time, re, secrets, base64, struct, asyncio, glob, sys, multiprocessing
+import os, json, random, string, time, re, secrets, base64, struct, asyncio, glob, sys, multiprocessing, subprocess
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -169,9 +169,33 @@ def decode_jwt_payload(token):
     try: return json.loads(base64.urlsafe_b64decode(payload))
     except Exception: return None
 def find_chrome():
-    paths = glob.glob(os.path.expanduser("~/.cloakbrowser/chromium-*/chrome"))
-    if not paths: raise RuntimeError("CloakBrowser not found")
-    return sorted(paths)[-1]
+    pattern = os.path.expanduser("~/.cloakbrowser/chromium-*/chrome")
+
+    def latest_chrome():
+        paths = glob.glob(pattern)
+        return sorted(paths)[-1] if paths else None
+
+    chrome = latest_chrome()
+    if chrome:
+        return chrome
+
+    log("[*] 未找到 CloakBrowser Chromium，正在自动安装...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "cloakbrowser", "install"])
+    except Exception as exc:
+        raise RuntimeError(
+            "CloakBrowser Chromium 自动安装失败。请手动执行: "
+            ".venv/bin/python -m cloakbrowser install"
+        ) from exc
+
+    chrome = latest_chrome()
+    if chrome:
+        return chrome
+
+    raise RuntimeError(
+        "CloakBrowser Chromium 安装后仍未找到。请手动执行: "
+        ".venv/bin/python -m cloakbrowser install"
+    )
 
 
 # ──────────────────────────────────────────────

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 from core.observer import Metrics
 
@@ -1170,6 +1171,64 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(register.SOLVER_MOUSE_CLICK_INTERVAL_MS, 600)
         self.assertEqual(register.PAGE_GOTO_WAIT_UNTIL, "domcontentloaded")
         self.assertEqual(register.PAGE_POST_WAIT_MS, 500)
+
+
+class FindChromeTests(unittest.TestCase):
+    def _create_chrome(self, home, version):
+        chrome_dir = os.path.join(home, ".cloakbrowser", f"chromium-{version}")
+        os.makedirs(chrome_dir, exist_ok=True)
+        chrome_path = os.path.join(chrome_dir, "chrome")
+        with open(chrome_path, "w", encoding="utf-8") as f:
+            f.write("")
+        return chrome_path
+
+    def _patch_home(self, home):
+        def expanduser(path):
+            if path == "~" or path.startswith("~/"):
+                return path.replace("~", home, 1)
+            return path
+
+        return mock.patch.object(register.os.path, "expanduser", side_effect=expanduser)
+
+    def test_find_chrome_returns_latest_existing_path_without_install(self):
+        with tempfile.TemporaryDirectory() as home, self._patch_home(home), mock.patch(
+            "subprocess.check_call"
+        ) as check_call:
+            older = self._create_chrome(home, "1000")
+            newer = self._create_chrome(home, "2000")
+
+            chrome = register.find_chrome()
+
+        self.assertEqual(os.path.normpath(chrome), newer)
+        self.assertNotEqual(os.path.normpath(chrome), older)
+        check_call.assert_not_called()
+
+    def test_find_chrome_installs_when_missing_then_returns_path(self):
+        with tempfile.TemporaryDirectory() as home, self._patch_home(home), mock.patch.object(
+            register.sys, "executable", "/tmp/project/.venv/bin/python"
+        ), mock.patch("subprocess.check_call") as check_call:
+
+            def install(_cmd):
+                self._create_chrome(home, "3000")
+
+            check_call.side_effect = install
+
+            chrome = register.find_chrome()
+
+        self.assertTrue(os.path.normpath(chrome).endswith(os.path.join("chromium-3000", "chrome")))
+        check_call.assert_called_once_with([
+            "/tmp/project/.venv/bin/python",
+            "-m",
+            "cloakbrowser",
+            "install",
+        ])
+
+    def test_find_chrome_raises_clear_error_when_install_does_not_create_chrome(self):
+        with tempfile.TemporaryDirectory() as home, self._patch_home(home), mock.patch.object(
+            register.sys, "executable", "/tmp/project/.venv/bin/python"
+        ), mock.patch("subprocess.check_call"):
+            with self.assertRaisesRegex(RuntimeError, r"cloakbrowser install"):
+                register.find_chrome()
 
 
 if __name__ == "__main__":

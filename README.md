@@ -12,7 +12,7 @@ cd grok-free-register
 bash start.sh
 ```
 
-首次运行会自动创建 `.venv`、安装依赖，并引导生成 `.env`。
+首次运行会自动创建 `.venv`、安装依赖、下载 CloakBrowser Chromium，并引导生成 `.env`。运行时如果缺少浏览器，也会自动下载 CloakBrowser Chromium。
 
 常用命令：
 
@@ -22,6 +22,13 @@ bash run.sh --target 100    # 成功 100 个后停止
 bash run.sh --run-label test_001
 bash run.sh --max-mem 6G    # 自动估算并发时最多使用 6G 内存
 bash start.sh --reconfig    # 重新选择邮箱模式
+```
+
+浏览器文件异常时，可手动修复：
+
+```bash
+.venv/bin/python -m cloakbrowser install
+.venv/bin/python -m cloakbrowser info
 ```
 
 需要代理时，在 `.env` 中加入：
