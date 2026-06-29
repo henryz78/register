@@ -210,6 +210,7 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self._old_poll_code = register.poll_code
         self._old_poll_code_async = register._poll_code_async
         self._old_log = register.log
+        self._old_log_verbose = getattr(register, "LOG_VERBOSE", None)
         self._old_target = register.TARGET
         self._old_c_hot_page_pool = getattr(register, "C_HOT_PAGE_POOL", None)
         self._old_c_hot_page_pool_size = getattr(register, "C_HOT_PAGE_POOL_SIZE", None)
@@ -219,6 +220,7 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self._old_output_dir = getattr(register, "OUTPUT_DIR", None)
         self._old_grok_output_path = getattr(register, "GROK_OUTPUT_PATH", None)
         self._old_accounts_output_path = getattr(register, "ACCOUNTS_OUTPUT_PATH", None)
+        self._old_success_count = getattr(register, "success_count", None)
 
     async def asyncTearDown(self):
         if hasattr(register, "_close_c_hot_page_pool"):
@@ -232,6 +234,10 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         register.poll_code = self._old_poll_code
         register._poll_code_async = self._old_poll_code_async
         register.log = self._old_log
+        if self._old_log_verbose is None and hasattr(register, "LOG_VERBOSE"):
+            delattr(register, "LOG_VERBOSE")
+        elif self._old_log_verbose is not None:
+            register.LOG_VERBOSE = self._old_log_verbose
         register.TARGET = self._old_target
         if self._old_c_hot_page_pool is None and hasattr(register, "C_HOT_PAGE_POOL"):
             delattr(register, "C_HOT_PAGE_POOL")
@@ -256,6 +262,10 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 delattr(register, name)
             elif value is not None:
                 setattr(register, name, value)
+        if self._old_success_count is None and hasattr(register, "success_count"):
+            delattr(register, "success_count")
+        elif self._old_success_count is not None:
+            register.success_count = self._old_success_count
 
     async def test_consume_pair_writes_success_to_configured_run_output_dir(self):
         async def ok_verify(*_args, **_kwargs):
@@ -287,6 +297,121 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(f.read(), "sso-token-value\n")
             with open(paths["accounts"], "r", encoding="utf-8") as f:
                 self.assertEqual(f.read(), "e@example.test:pw:sso-token-value\n")
+
+    async def test_consume_pair_sets_stop_when_success_reaches_target(self):
+        async def ok_verify(*_args, **_kwargs):
+            return True
+
+        async def ok_register(*_args, **_kwargs):
+            return "sso-token-value"
+
+        register.STOP = asyncio.Event()
+        register.TARGET = 1
+        register.grpc_verify_code = ok_verify
+        register.server_action_register = ok_register
+        register.log = lambda _msg: None
+        metrics = Metrics()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = register.configure_output_paths(
+                run_label="batch-001",
+                output_root=tmp,
+            )
+
+            ok = await register._consume_pair(
+                FakeBrowser(),
+                asyncio.Semaphore(1),
+                FakePair(),
+                metrics,
+            )
+
+            self.assertTrue(ok)
+            self.assertEqual(metrics.success_count, 1)
+            self.assertTrue(register.STOP.is_set())
+            with open(paths["accounts"], "r", encoding="utf-8") as f:
+                self.assertEqual(len(f.readlines()), 1)
+
+    async def test_consume_pair_does_not_write_past_target(self):
+        async def ok_verify(*_args, **_kwargs):
+            return True
+
+        async def ok_register(*_args, **_kwargs):
+            return "overflow-sso-token"
+
+        register.STOP = asyncio.Event()
+        register.TARGET = 1
+        register.success_count = 1
+        register.grpc_verify_code = ok_verify
+        register.server_action_register = ok_register
+        register.log = lambda _msg: None
+        metrics = Metrics()
+        metrics.success_count = 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = register.configure_output_paths(
+                run_label="batch-001",
+                output_root=tmp,
+            )
+
+            ok = await register._consume_pair(
+                FakeBrowser(),
+                asyncio.Semaphore(1),
+                FakePair(),
+                metrics,
+            )
+
+            self.assertIsNone(ok)
+            self.assertEqual(metrics.success_count, 1)
+            self.assertEqual(register.success_count, 1)
+            self.assertTrue(register.STOP.is_set())
+            self.assertFalse(os.path.exists(paths["grok"]))
+            self.assertFalse(os.path.exists(paths["accounts"]))
+
+    async def test_runtime_waiter_returns_when_stop_is_set(self):
+        register.STOP = asyncio.Event()
+        worker = asyncio.create_task(asyncio.sleep(10))
+        waiter = asyncio.create_task(register._wait_for_stop_or_worker_exit([worker]))
+
+        await asyncio.sleep(0)
+        register.STOP.set()
+        reason = await asyncio.wait_for(waiter, timeout=1)
+
+        self.assertEqual(reason, "stop")
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_cancel_tasks_drains_cancelled_workers(self):
+        worker = asyncio.create_task(asyncio.sleep(10))
+
+        await register._cancel_tasks([worker])
+
+        self.assertTrue(worker.cancelled())
+
+    async def test_human_status_hides_verbose_metric_keys(self):
+        metrics = Metrics()
+        metrics.success_count = 2
+        metrics.q_sent = 5
+        metrics.pair_consumed_fail = 1
+        register.TARGET = 5
+        status = register.format_human_status(FakeInventory(), {}, metrics)
+
+        self.assertIn("进度 2/5", status)
+        self.assertIn("验证码 5", status)
+        self.assertIn("失败 1", status)
+        self.assertNotIn("t_slot", status)
+        self.assertNotIn("solver_", status)
+
+    async def test_verbose_log_is_hidden_by_default(self):
+        messages = []
+        old_verbose = register.LOG_VERBOSE
+        try:
+            register.LOG_VERBOSE = False
+            register.log = messages.append
+            register.verbose_log("secret technical line")
+        finally:
+            register.LOG_VERBOSE = old_verbose
+
+        self.assertEqual(messages, [])
 
     async def test_c_worker_timeout_releases_physical_and_pair_and_counts_failure(self):
         async def slow_verify(*_args, **_kwargs):
@@ -444,22 +569,27 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_monitor_uses_metrics_snapshot(self):
         register.STOP = asyncio.Event()
         register.TARGET = 1
+        old_verbose = register.LOG_VERBOSE
+        register.LOG_VERBOSE = True
         messages = []
         register.log = messages.append
 
-        metrics = Metrics()
-        metrics.success_count = 1
-        metrics.pair_claimed = 2
-        metrics.pair_consumed_ok = 1
-        metrics.pair_consumed_fail = 1
-        sems = {
-            "physical": asyncio.Semaphore(1),
-            "t_slot": asyncio.Semaphore(1),
-            "q_slot": asyncio.Semaphore(1),
-            "q_pending": asyncio.Semaphore(1),
-        }
+        try:
+            metrics = Metrics()
+            metrics.success_count = 1
+            metrics.pair_claimed = 2
+            metrics.pair_consumed_ok = 1
+            metrics.pair_consumed_fail = 1
+            sems = {
+                "physical": asyncio.Semaphore(1),
+                "t_slot": asyncio.Semaphore(1),
+                "q_slot": asyncio.Semaphore(1),
+                "q_pending": asyncio.Semaphore(1),
+            }
 
-        await register.monitor(FakeInventory(), sems, metrics, interval=0)
+            await register.monitor(FakeInventory(), sems, metrics, interval=0)
+        finally:
+            register.LOG_VERBOSE = old_verbose
 
         self.assertTrue(
             any("pair:2 ok:1 fail:1" in message for message in messages),

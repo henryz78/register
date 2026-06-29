@@ -38,6 +38,7 @@ class EnvInitTests(unittest.TestCase):
             "example.com",
             "http://127.0.0.1:8081",
             "25",
+            "0",
             "batch_demo",
             "out",
             "",
@@ -59,6 +60,7 @@ class EnvInitTests(unittest.TestCase):
         self.assertEqual(values["EMAIL_DOMAIN"], "example.com")
         self.assertEqual(values["EMAIL_API"], "http://127.0.0.1:8081")
         self.assertEqual(values["TARGET"], "25")
+        self.assertEqual(values["LOG_VERBOSE"], "0")
         self.assertEqual(values["RUN_LABEL"], "batch_demo")
         self.assertEqual(values["OUTPUT_ROOT"], "out")
         self.assertEqual(values["OUTPUT_DIR"], "")

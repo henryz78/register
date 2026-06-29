@@ -54,6 +54,12 @@ def _env_int_or_none(key):
     except ValueError:
         return None
 
+def _env_bool(key, default=False):
+    raw = str(os.environ.get(key, "")).strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
 EMAIL_MODE      = (os.environ.get("EMAIL_MODE") or "tempmail").strip().lower()   # tempmail | custom
 if EMAIL_MODE == "mailtm":      # 兼容旧名
     EMAIL_MODE = "tempmail"
@@ -63,6 +69,7 @@ MIN_FREE_MEM_MB = _env_int("MIN_FREE_MEM_MB", 500)   # 自动容量派生时保�
 T_TARGET        = _env_int("T_TARGET", 4)            # token 池缓冲目标
 Q_TARGET        = _env_int("Q_TARGET", 4)            # 就绪验证码缓冲目标
 TARGET          = _env_int("TARGET", 0)              # 攒够 N 个号自动停(0=不限;--target N 可覆盖)
+LOG_VERBOSE     = _env_bool("LOG_VERBOSE", False)    # 1=输出调试指标长日志
 
 # CSP 容量参数
 PHYSICAL_CAP    = _env_int("PHYSICAL_CAP", 0)        # 本地物理资源许可,0=自动派生
@@ -121,6 +128,12 @@ SOLVE, PRODUCE, CONSUME, IDLE = 'SOLVE', 'PRODUCE', 'CONSUME', 'IDLE'
 POLL_EXECUTOR = ThreadPoolExecutor(max_workers=32)
 
 def log(msg): print(msg, flush=True)
+def verbose_log(msg):
+    if LOG_VERBOSE:
+        log(msg)
+
+def _progress_text(count):
+    return f"{count}/{TARGET}" if TARGET else str(count)
 def rand_str(n=15): return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
 def configure_output_paths(run_label=None, output_root=None, output_dir=None):
     """配置本次运行的独立输出目录。"""
@@ -355,7 +368,7 @@ def derive_c_hot_page_pool_size(physical_cap, c_workers, configured_size=None):
 # ──────────────────────────────────────────────
 async def fetch_config():
     global SITE_KEY, ACTION_ID, STATE_TREE
-    log('[*] Fetching config...')
+    log('[*] 正在读取页面配置...')
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(executable_path=find_chrome(), headless=True)
         try:
@@ -364,7 +377,9 @@ async def fetch_config():
             await page.wait_for_timeout(5000)
             html = await page.content()
             m = re.search(r'0x4AAAAAAA[a-zA-Z0-9_-]+', html)
-            if m: SITE_KEY = m.group(0); log(f'[+] SITE_KEY: {SITE_KEY}')
+            if m:
+                SITE_KEY = m.group(0)
+                verbose_log(f'[debug] SITE_KEY: {SITE_KEY}')
             for chunk in re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.DOTALL):
                 if 'sign-up' not in chunk: continue
                 decoded = chunk.replace('\\"', '"')
@@ -374,7 +389,7 @@ async def fetch_config():
                 end_idx = decoded.find('"$undefined"', f_start)
                 if end_idx < 0: continue
                 STATE_TREE = quote(decoded[f_start:end_idx].replace('\\\\"', '"').replace('\\', ''), safe='')
-                log(f'[+] STATE_TREE: {STATE_TREE[:50]}...')
+                verbose_log(f'[debug] STATE_TREE: {STATE_TREE[:50]}...')
                 break
             js_urls = re.findall(r'src="(/_next/static/[^"]+\.js)"', html)
             for js_url in js_urls[:50]:
@@ -388,11 +403,13 @@ async def fetch_config():
                     raise
                 except Exception:
                     continue
-            if ACTION_ID: log(f'[+] ACTION_ID: {ACTION_ID}')
+            if ACTION_ID:
+                verbose_log(f'[debug] ACTION_ID: {ACTION_ID}')
         finally:
             await browser.close()
     if not all([SITE_KEY, ACTION_ID, STATE_TREE]):
         raise RuntimeError("Config fetch failed")
+    log('[*] 页面配置读取完成。')
 
 
 # ──────────────────────────────────────────────
@@ -1190,7 +1207,7 @@ async def _poll_and_admit_q(
                 expires_at=returned_at + Q_MAX_AGE,
             )
             await inventory.put_q(q_env)
-            log(f'[P] {request["email"]} code={code} admitted')
+            verbose_log(f'[debug] 验证码已入队: {request["email"]} code={code}')
             return True
         except asyncio.CancelledError:
             if q_env is not None and not q_env.released:
@@ -1494,12 +1511,17 @@ async def p_worker(
 
 
 async def _consume_pair(browser, physical_sem, pair, metrics):
-    """执行一次 C 消费。返回 True 表示业务成功,False 表示消费失败。"""
+    """执行一次 C 消费。返回 True 表示已保存成功结果,False 表示失败,None 表示目标已满。"""
     global success_count
     email = pair.q.value['email']
     password = pair.q.value['password']
     code = pair.q.value['code']
     token = pair.t.value
+
+    if TARGET and metrics.success_count >= TARGET:
+        success_count = metrics.success_count
+        STOP.set()
+        return None
 
     physical_wait_started = time.time()
     await physical_sem.acquire()
@@ -1528,6 +1550,11 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
             elapsed = time.time() - t0
             paths = ensure_output_paths()
             async with file_lock:
+                if TARGET and metrics.success_count >= TARGET:
+                    success_count = metrics.success_count
+                    STOP.set()
+                    verbose_log(f'[debug] 目标已满，跳过额外成功结果: {email}')
+                    return None
                 with open(paths["grok"], "a", encoding="utf-8") as f:
                     f.write(sso + "\n")
                 with open(paths["accounts"], "a", encoding="utf-8") as f:
@@ -1535,11 +1562,14 @@ async def _consume_pair(browser, physical_sem, pair, metrics):
                 metrics.success_count += 1
                 success_count = metrics.success_count
                 count = metrics.success_count
+                if TARGET and count >= TARGET:
+                    STOP.set()
             avg = (time.time() - metrics.start_time) / count
-            log(f'[✓] {email} {elapsed:.1f}s avg:{avg:.1f}s #{count}')
+            log(f'[✓] 成功 {_progress_text(count)} | 本次 {elapsed:.1f}s | 平均 {avg:.1f}s')
+            verbose_log(f'[debug] 保存账号: {email}')
             return True
 
-        log(f'[✗] {email} register failed')
+        log(f'[✗] 注册失败 | {email}')
         return False
     finally:
         metrics.c_physical_hold_seconds += time.time() - physical_hold_started
@@ -1560,7 +1590,7 @@ async def c_worker(wid, browser, inventory, physical_sem, metrics, admission_gat
                     )
                     if ok:
                         metrics.pair_consumed_ok += 1
-                    else:
+                    elif ok is False:
                         metrics.pair_consumed_fail += 1
                 except asyncio.TimeoutError:
                     metrics.pair_consumed_fail += 1
@@ -1577,20 +1607,63 @@ async def c_worker(wid, browser, inventory, physical_sem, metrics, admission_gat
 # ──────────────────────────────────────────────
 #  只读监控
 # ──────────────────────────────────────────────
+def format_human_status(inventory, sems, metrics):
+    elapsed = int(time.time() - metrics.start_time)
+    t_depth = getattr(inventory, "t_depth", 0)
+    q_depth = getattr(inventory, "q_depth", 0)
+    return (
+        f"[*] 进度 {_progress_text(metrics.success_count)} | "
+        f"token {t_depth} | 验证码 {metrics.q_sent}/{metrics.q_returned} | "
+        f"待注册 {q_depth} | 失败 {metrics.pair_consumed_fail} | 用时 {elapsed}s"
+    )
+
+
 async def monitor(inventory, sems, metrics, interval=8):
     """定期输出系统状态。"""
     while not STOP.is_set():
         await asyncio.sleep(interval)
-        log(metrics.snapshot(inventory, sems))
+        if LOG_VERBOSE:
+            log(metrics.snapshot(inventory, sems))
+        else:
+            log(format_human_status(inventory, sems, metrics))
         if TARGET and metrics.success_count >= TARGET:
             log(f'[*] 已达目标 {TARGET} 个,停止。'); STOP.set()
+
+
+async def _wait_for_stop_or_worker_exit(tasks):
+    stop_task = asyncio.create_task(STOP.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            [stop_task, *tasks],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done:
+            return "stop"
+        for task in tasks:
+            if task in done and not task.cancelled():
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+        return "worker_exit"
+    finally:
+        if not stop_task.done():
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+
+
+async def _cancel_tasks(tasks):
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ──────────────────────────────────────────────
 #  主入口
 # ──────────────────────────────────────────────
 async def main():
-    global TARGET, _c_hot_page_pool_size
+    global TARGET, LOG_VERBOSE, _c_hot_page_pool_size
     max_mem_arg = None
     run_label_arg = None
     output_dir_arg = None
@@ -1619,6 +1692,10 @@ async def main():
         if arg == '--output-root' and nxt is not None:
             output_root_arg = nxt
             i += 2
+            continue
+        if arg == '--verbose':
+            LOG_VERBOSE = True
+            i += 1
             continue
         i += 1
 
@@ -1649,40 +1726,40 @@ async def main():
         log("[!] custom 模式需在 .env 设置 EMAIL_DOMAIN(并运行 email_server.py)"); sys.exit(1)
 
     log("=" * 50)
-    log(f"  Grok Free Register (CSP Architecture)")
-    log(f"  CPU: {cpu} cores  Memory: {resources['available_mem']}/{resources['total_mem']}MB")
-    log(f"  MaxMemForAuto: {resources['max_mem']}MB  MemReserve: {MIN_FREE_MEM_MB}MB  PhysicalMemBudget: {PHYSICAL_MEM_MB}MB")
+    log(f"  Grok Free Register")
+    log(f"  模式: {EMAIL_MODE}" + (f" ({EMAIL_DOMAIN})" if EMAIL_MODE == 'custom' else ""))
+    log(f"  目标: {TARGET if TARGET else '不限'}")
+    log(f"  输出: {output_paths['output_dir']}")
+    log(f"  并发: 浏览器 {physical_cap} | token {s_workers} | 邮箱 {p_workers} | 注册 {c_workers}")
+    log(f"  详细日志: {'开启' if LOG_VERBOSE else '关闭，可加 --verbose 开启'}")
+    verbose_log(f"  CPU: {cpu} cores  Memory: {resources['available_mem']}/{resources['total_mem']}MB")
+    verbose_log(f"  MaxMemForAuto: {resources['max_mem']}MB  MemReserve: {MIN_FREE_MEM_MB}MB  PhysicalMemBudget: {PHYSICAL_MEM_MB}MB")
     if capacity_profile:
-        log(f"  CapacityProfile: {CAPACITY_PROFILE} physical_cap={capacity_profile.get('physical_cap')}")
-    log(f"  EmailMode: {EMAIL_MODE}" + (f" ({EMAIL_DOMAIN})" if EMAIL_MODE == 'custom' else ""))
-    log(f"  RunLabel: {output_paths['run_label']}")
-    log(f"  OutputDir: {output_paths['output_dir']}")
-    log(f"  Physical_Sem={physical_cap}  T_Slot={T_SLOT_CAP}  Q_Slot={Q_SLOT_CAP}  Q_Pending={Q_PENDING_CAP}")
-    log(
+        verbose_log(f"  CapacityProfile: {CAPACITY_PROFILE} physical_cap={capacity_profile.get('physical_cap')}")
+    verbose_log(f"  RunLabel: {output_paths['run_label']}")
+    verbose_log(f"  Physical_Sem={physical_cap}  T_Slot={T_SLOT_CAP}  Q_Slot={Q_SLOT_CAP}  Q_Pending={Q_PENDING_CAP}")
+    verbose_log(
         f"  Admission: T_LOW/HIGH={admission_watermarks['t_low']}/{admission_watermarks['t_high']}  "
         f"Q_LOW/HIGH={admission_watermarks['q_low']}/{admission_watermarks['q_high']}"
     )
-    log(f"  P_BatchMax={P_BATCH_MAX}  P_Send_Sem={'disabled' if p_send_cap == 0 else p_send_cap}")
-    log(
+    verbose_log(f"  P_BatchMax={P_BATCH_MAX}  P_Send_Sem={'disabled' if p_send_cap == 0 else p_send_cap}")
+    verbose_log(
         f"  C_HotPagePool={'on' if C_HOT_PAGE_POOL else 'off'}"
         f" size={_c_hot_page_pool_size if C_HOT_PAGE_POOL else 0}"
         f" setCookieViaRequest={'on' if C_SET_COOKIE_VIA_REQUEST else 'off'}"
     )
-    log(f"  Workers: S={s_workers} P={p_workers} C={c_workers}")
-    log(f"  Timeouts: P_Request={P_REQUEST_TIMEOUT}s  C_Consume={C_CONSUME_TIMEOUT}s")
-    log(
+    verbose_log(f"  Timeouts: P_Request={P_REQUEST_TIMEOUT}s  C_Consume={C_CONSUME_TIMEOUT}s")
+    verbose_log(
         f"  SolverMouseClick: retries={SOLVER_MOUSE_CLICK_RETRIES} "
         f"interval={SOLVER_MOUSE_CLICK_INTERVAL_MS}ms"
     )
-    if TARGET:
-        log(f"  Target: {TARGET}")
     log("=" * 50)
 
     await fetch_config()
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(executable_path=find_chrome(), headless=True)
-        log('[*] Browser launched')
+        log('[*] 浏览器已启动。')
 
         # CSP 组件
         metrics = Metrics()
@@ -1744,15 +1821,16 @@ async def main():
         # Monitor
         tasks.append(asyncio.create_task(monitor(inventory, sems, metrics)))
 
-        log(f'[*] CSP up: S={s_workers} P={p_workers} C={c_workers} workers')
+        log(f'[*] 注册流水线已启动。')
 
         try:
-            await asyncio.gather(*tasks)
+            reason = await _wait_for_stop_or_worker_exit(tasks)
+            if reason == "stop":
+                log('[*] 正在停止后台任务...')
         except (KeyboardInterrupt, asyncio.CancelledError):
             log('[*] Shutting down...')
         finally:
-            for t in tasks:
-                t.cancel()
+            await _cancel_tasks(tasks)
             await _close_c_hot_page_pool()
             await browser.close()
 
