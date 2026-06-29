@@ -21,22 +21,29 @@ fi
 echo "=== grok-free-register 初始化 ==="
 
 # 1) 依赖:没有 venv 就自动安装
+echo "[1/4] 检查 Python 环境..."
 if [ ! -d .venv ]; then
-    echo "[1/3] 首次运行，安装依赖和浏览器..."
+    echo "[*] 首次运行，开始安装依赖和浏览器。"
     bash setup.sh
 else
-    echo "[1/3] Python 环境已存在，跳过依赖安装。"
+    echo "[*] Python 环境已存在。"
 fi
 
 # 2) 浏览器:已有 venv 时也检查 CloakBrowser Chromium
-echo "[2/3] 检查 CloakBrowser Chromium..."
+echo "[2/4] 检查浏览器..."
 if ! .venv/bin/python -m cloakbrowser info >/dev/null 2>&1; then
-    echo "[*] 未找到 CloakBrowser Chromium，开始下载..."
-    .venv/bin/python -m cloakbrowser install
+    install_log="${TMPDIR:-/tmp}/grok-free-register-browser.log"
+    echo "[*] 开始下载 CloakBrowser Chromium，可能需要几分钟。"
+    if ! .venv/bin/python -m cloakbrowser install >"$install_log" 2>&1; then
+        echo "[!] CloakBrowser Chromium 安装失败，详细日志: $install_log"
+        exit 1
+    fi
+else
+    echo "[*] CloakBrowser Chromium 已就绪。"
 fi
 
 # 3) 配置:.env 缺失或显式 --init 时进入初始化
-echo "[3/3] 初始化 .env 配置..."
+echo "[3/4] 初始化配置..."
 if [ ! -f .env ] || [ "$force_init" = "1" ]; then
     if [ "$force_init" = "1" ]; then
         .venv/bin/python init_env.py --force
@@ -48,5 +55,5 @@ else
 fi
 
 echo ""
-echo "[*] 初始化完成。"
+echo "[4/4] 初始化完成。"
 echo "下一步运行: bash run.sh"

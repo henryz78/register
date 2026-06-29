@@ -78,6 +78,31 @@ def _clean_value(value: str) -> str:
     return str(value).replace("\r", "").replace("\n", "").strip()
 
 
+def _is_enabled(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _field_default(field: EnvField, values: dict[str, str]) -> str:
+    if field.key == "C_SET_COOKIE_VIA_REQUEST" and _is_enabled(values.get("C_HOT_PAGE_POOL", "")):
+        return "1"
+    return field.default
+
+
+def should_prompt_field(field: EnvField, values: dict[str, str]) -> bool:
+    email_mode = str(values.get("EMAIL_MODE", "tempmail")).strip().lower()
+    if field.key in {"EMAIL_DOMAIN", "EMAIL_API"}:
+        return email_mode == "custom"
+    if field.key in {"GROK2API_TOKEN", "GROK2API_APPEND", "GROK2API_INSECURE"}:
+        return bool(str(values.get("GROK2API_ENDPOINT", "")).strip())
+    if field.key == "MAX_SOLVER_REUSE":
+        return _is_enabled(values.get("SOLVER_REUSE", field.default))
+    if field.key == "SOLVER_TIMELINE_SAMPLE":
+        return _is_enabled(values.get("SOLVER_TIMELINE_TRACE", "0"))
+    if field.key in {"C_HOT_PAGE_POOL_SIZE", "C_SET_COOKIE_VIA_REQUEST"}:
+        return _is_enabled(values.get("C_HOT_PAGE_POOL", "0"))
+    return True
+
+
 def _ask(
     input_func: Callable[[str], str],
     prompt: str,
@@ -96,14 +121,18 @@ def collect_custom_values(
     input_func: Callable[[str], str] = input,
     output_func: Callable[[str], None] = print,
 ) -> dict[str, str]:
-    values: dict[str, str] = {}
+    values: dict[str, str] = default_values()
     current_group = ""
     for field in CONFIG_FIELDS:
+        if not should_prompt_field(field, values):
+            values[field.key] = _field_default(field, values)
+            continue
         if field.group != current_group:
             current_group = field.group
             output_func("")
             output_func(f"## {current_group}")
-        values[field.key] = _ask(input_func, f"{field.key} {field.prompt}", field.default)
+        default = _field_default(field, values)
+        values[field.key] = _ask(input_func, f"{field.key} {field.prompt}", default)
     return values
 
 

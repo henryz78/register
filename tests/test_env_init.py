@@ -55,7 +55,6 @@ class EnvInitTests(unittest.TestCase):
 
         values = init_env.collect_values(input_func=ask, output_func=lambda _msg="": None)
 
-        self.assertEqual(len(prompts), 1 + len(init_env.CONFIG_FIELDS))
         self.assertEqual(values["EMAIL_MODE"], "custom")
         self.assertEqual(values["EMAIL_DOMAIN"], "example.com")
         self.assertEqual(values["EMAIL_API"], "http://127.0.0.1:8081")
@@ -69,6 +68,89 @@ class EnvInitTests(unittest.TestCase):
         self.assertEqual(values["GROK2API_INSECURE"], "0")
         self.assertEqual(values["PHYSICAL_CAP"], "6")
         self.assertEqual(values["SOLVER_TIMELINE_TRACE"], "0")
+        self.assertTrue(any("EMAIL_DOMAIN" in prompt for prompt in prompts))
+        self.assertTrue(any("EMAIL_API" in prompt for prompt in prompts))
+        self.assertTrue(any("GROK2API_TOKEN" in prompt for prompt in prompts))
+        self.assertTrue(any("GROK2API_APPEND" in prompt for prompt in prompts))
+        self.assertFalse(any("SOLVER_TIMELINE_SAMPLE" in prompt for prompt in prompts))
+
+    def test_tempmail_skips_custom_email_prompts(self):
+        answers = iter([
+            "2",
+            "tempmail",
+        ])
+        prompts = []
+
+        def ask(prompt):
+            prompts.append(prompt)
+            return next(answers, "")
+
+        values = init_env.collect_values(input_func=ask, output_func=lambda _msg="": None)
+
+        self.assertEqual(values["EMAIL_MODE"], "tempmail")
+        self.assertEqual(values["EMAIL_DOMAIN"], "")
+        self.assertEqual(values["EMAIL_API"], "http://127.0.0.1:8080")
+        self.assertFalse(any("EMAIL_DOMAIN" in prompt for prompt in prompts))
+        self.assertFalse(any("EMAIL_API" in prompt for prompt in prompts))
+
+    def test_empty_grok2api_endpoint_skips_push_detail_prompts(self):
+        answers = iter([
+            "2",
+            "tempmail",
+        ])
+        prompts = []
+
+        def ask(prompt):
+            prompts.append(prompt)
+            return next(answers, "")
+
+        values = init_env.collect_values(input_func=ask, output_func=lambda _msg="": None)
+
+        self.assertEqual(values["GROK2API_ENDPOINT"], "")
+        self.assertEqual(values["GROK2API_TOKEN"], "")
+        self.assertEqual(values["GROK2API_APPEND"], "1")
+        self.assertEqual(values["GROK2API_INSECURE"], "0")
+        self.assertFalse(any("GROK2API_TOKEN" in prompt for prompt in prompts))
+        self.assertFalse(any("GROK2API_APPEND" in prompt for prompt in prompts))
+        self.assertFalse(any("GROK2API_INSECURE" in prompt for prompt in prompts))
+
+    def test_disabled_optional_features_skip_their_detail_prompts(self):
+        answers = iter([
+            "2",
+            "tempmail",
+        ])
+        prompts = []
+
+        def ask(prompt):
+            prompts.append(prompt)
+            return next(answers, "")
+
+        values = init_env.collect_values(input_func=ask, output_func=lambda _msg="": None)
+
+        self.assertEqual(values["SOLVER_REUSE"], "1")
+        self.assertEqual(values["MAX_SOLVER_REUSE"], "25")
+        self.assertEqual(values["SOLVER_TIMELINE_TRACE"], "0")
+        self.assertEqual(values["SOLVER_TIMELINE_SAMPLE"], "8")
+        self.assertEqual(values["C_HOT_PAGE_POOL"], "0")
+        self.assertEqual(values["C_HOT_PAGE_POOL_SIZE"], "0")
+        self.assertFalse(any("SOLVER_TIMELINE_SAMPLE" in prompt for prompt in prompts))
+        self.assertFalse(any("C_HOT_PAGE_POOL_SIZE" in prompt for prompt in prompts))
+
+    def test_setup_script_suppresses_package_manager_noise(self):
+        text = Path("setup.sh").read_text(encoding="utf-8")
+
+        self.assertIn("APT_LISTCHANGES_FRONTEND=none", text)
+        self.assertIn("apt update -qq >/dev/null", text)
+        self.assertIn("apt install -y -qq", text)
+        self.assertIn(">/dev/null 2>&1", text)
+
+    def test_start_script_uses_single_clear_step_sequence(self):
+        text = Path("start.sh").read_text(encoding="utf-8")
+
+        self.assertIn("[1/4] 检查 Python 环境", text)
+        self.assertIn("[2/4] 检查浏览器", text)
+        self.assertIn("[3/4] 初始化配置", text)
+        self.assertIn("[4/4] 初始化完成", text)
 
     def test_collect_values_uses_defaults_when_input_stream_ends(self):
         def ask(_prompt):
