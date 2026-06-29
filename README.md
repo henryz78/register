@@ -21,7 +21,7 @@ bash run.sh
 
 ```bash
 bash run.sh                 # 按当前 .env 运行
-bash run.sh --target 100    # 成功 100 个后停止
+bash run.sh --target 100    # 最多保存 100 个成功账号
 bash run.sh --run-label test_001
 bash run.sh --max-mem 6G    # 自动估算并发时最多使用 6G 内存
 bash start.sh --init        # 重新初始化 .env
@@ -82,7 +82,7 @@ EMAIL_API=http://127.0.0.1:8080
 | `EMAIL_MODE` | `tempmail` | 邮箱模式，支持 `tempmail` 和 `custom` |
 | `EMAIL_DOMAIN` | 空 | `custom` 模式使用的域名 |
 | `EMAIL_API` | `http://127.0.0.1:8080` | 本地收信服务地址 |
-| `TARGET` | `0` | 成功数量目标，`0` 表示不限 |
+| `TARGET` | `0` | 最多保存 N 个成功账号，`0` 表示不限 |
 | `RUN_LABEL` | 自动生成 | 本次运行批次名；结果写入 `keys/<RUN_LABEL>/` |
 | `OUTPUT_ROOT` | `keys` | 批次输出根目录 |
 | `OUTPUT_DIR` | 空 | 指定完整输出目录；优先级高于 `OUTPUT_ROOT` / `RUN_LABEL` |
