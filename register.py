@@ -65,6 +65,8 @@ if EMAIL_MODE == "mailtm":      # 兼容旧名
     EMAIL_MODE = "tempmail"
 LOCAL_EMAIL_API = (os.environ.get("EMAIL_API") or "http://127.0.0.1:8080").strip()
 EMAIL_DOMAIN    = (os.environ.get("EMAIL_DOMAIN") or "").strip()
+NIMAIL_API_BASE = (os.environ.get("NIMAIL_API_BASE") or "https://www.nimail.cn").strip().rstrip("/")
+NIMAIL_BASIC_AUTH = (os.environ.get("NIMAIL_BASIC_AUTH") or "").strip()
 MIN_FREE_MEM_MB = _env_int("MIN_FREE_MEM_MB", 500)   # 自动容量派生时保留的内存(MB)
 T_TARGET        = _env_int("T_TARGET", 4)            # token 池缓冲目标
 Q_TARGET        = _env_int("Q_TARGET", 4)            # 就绪验证码缓冲目标
@@ -984,7 +986,7 @@ def _record_solver_trace(metrics, trace, total_seconds, token):
 # ──────────────────────────────────────────────
 # 免 key 的公共临时邮箱 provider(实测可用,互为 fallback 消灭单点):
 #  - mail.tm 同协议:mail.tm / mail.gw / duckmail.sbs
-#  - 独立 API:tempmail.lol
+#  - 独立 API:tempmail.lol / nimail.cn
 # handle 编码 provider,供 poll_code 分派;新增 provider 只要在这两处加一段即可。
 TEMPMAIL_BASES = ["https://api.mail.tm", "https://api.mail.gw", "https://api.duckmail.sbs"]
 
@@ -1018,8 +1020,37 @@ def _lol_create():
         raise RuntimeError('lol create failed')
     return f'lol|{tok}', addr
 
+def _nimail_headers():
+    """NiMail API 请求头;可选 Basic 授权用于更稳定的专属额度。"""
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Origin': NIMAIL_API_BASE,
+    }
+    if NIMAIL_BASIC_AUTH:
+        headers['Authorization'] = (
+            NIMAIL_BASIC_AUTH
+            if NIMAIL_BASIC_AUTH.lower().startswith('basic ')
+            else f'Basic {NIMAIL_BASIC_AUTH}'
+        )
+    return headers
+
+def _nimail_create():
+    """nimail.cn 建箱;返回 (handle, email)。"""
+    email = f'oc{secrets.token_hex(5)}@nimail.cn'
+    data = {'mail': email}
+    result = req.post(
+        f'{NIMAIL_API_BASE}/api/applymail',
+        headers=_nimail_headers(),
+        data=data,
+        timeout=12,
+    ).json()
+    if str(result.get('success', '')).lower() != 'true':
+        raise RuntimeError('nimail apply failed')
+    return f'nimail|{email}', email
+
 def create_email():
-    """custom 用自建域名(本地 webhook);tempmail 随机打散多个 provider,逐个 fallback。"""
+    """custom 用自建域名(本地 webhook);tempmail 按稳定顺序逐个 fallback。"""
     if EMAIL_MODE == 'custom':
         email = f'oc{secrets.token_hex(5)}@{EMAIL_DOMAIN}'
         password = rand_str()
@@ -1027,7 +1058,7 @@ def create_email():
 
     password = rand_str()
     # 优先用已跑通的 mail.tm,其余按序仅作 fallback
-    makers = [(lambda b=b: _mailtm_create(b, password)) for b in TEMPMAIL_BASES] + [_lol_create]
+    makers = [(lambda b=b: _mailtm_create(b, password)) for b in TEMPMAIL_BASES] + [_lol_create, _nimail_create]
     for make in makers:
         try:
             handle, email = make()
@@ -1039,6 +1070,40 @@ def create_email():
 def _tempmail_fetch(handle):
     """按 handle 前缀分派,取该邮箱当前邮件全文(subject+text+html);无则 None。"""
     kind = handle.split('|', 1)[0]
+    if kind == 'nimail':
+        _, email = handle.split('|', 1)
+        data = {
+            'mail': email,
+            'time': '0',
+            '_': str(int(time.time() * 1000)),
+        }
+        inbox = req.post(
+            f'{NIMAIL_API_BASE}/api/getmails',
+            headers=_nimail_headers(),
+            data=data,
+            timeout=10,
+        ).json()
+        items = inbox.get('mail') or inbox.get('emails') or inbox.get('messages') or []
+        if not items:
+            return None
+        parts = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            parts.append('\n'.join(str(item.get(k, '')) for k in ['subject', 'from', 'reply-to', 'email']))
+            mid = str(item.get('id') or '')
+            if not mid:
+                continue
+            try:
+                detail = req.get(
+                    f'{NIMAIL_API_BASE}/api/raw-html/{quote(email, safe="")}/{quote(mid, safe="")}',
+                    headers=_nimail_headers(),
+                    timeout=10,
+                )
+                parts.append(getattr(detail, 'text', '') or '')
+            except Exception:
+                continue
+        return '\n'.join(parts)
     if kind == 'lol':
         tok = handle.split('|', 1)[1]
         data = req.get(f'https://api.tempmail.lol/v2/inbox?token={tok}', timeout=10).json()

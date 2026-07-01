@@ -1379,6 +1379,121 @@ class RegisterRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(register.PAGE_POST_WAIT_MS, 500)
 
 
+class FakeHttpResponse:
+    def __init__(self, payload=None, text=''):
+        self.payload = payload if payload is not None else {}
+        self.text = text
+        self.status_code = 200
+
+    def json(self):
+        return self.payload
+
+
+class NimailProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.old_req = register.req
+        self.old_token_hex = register.secrets.token_hex
+        self.old_nimail_api_base = getattr(register, 'NIMAIL_API_BASE', None)
+        self.old_nimail_basic_auth = getattr(register, 'NIMAIL_BASIC_AUTH', None)
+        self.old_email_mode = register.EMAIL_MODE
+        register.NIMAIL_API_BASE = 'https://www.nimail.cn'
+        register.NIMAIL_BASIC_AUTH = ''
+
+    def tearDown(self):
+        register.req = self.old_req
+        register.secrets.token_hex = self.old_token_hex
+        register.EMAIL_MODE = self.old_email_mode
+        if self.old_nimail_api_base is None and hasattr(register, 'NIMAIL_API_BASE'):
+            delattr(register, 'NIMAIL_API_BASE')
+        elif self.old_nimail_api_base is not None:
+            register.NIMAIL_API_BASE = self.old_nimail_api_base
+        if self.old_nimail_basic_auth is None and hasattr(register, 'NIMAIL_BASIC_AUTH'):
+            delattr(register, 'NIMAIL_BASIC_AUTH')
+        elif self.old_nimail_basic_auth is not None:
+            register.NIMAIL_BASIC_AUTH = self.old_nimail_basic_auth
+
+    def test_nimail_create_applies_generated_mailbox(self):
+        calls = []
+
+        class FakeReq:
+            def post(self, url, **kwargs):
+                calls.append({'url': url, **kwargs})
+                return FakeHttpResponse({'success': 'true', 'user': kwargs['data']['mail']})
+
+        register.req = FakeReq()
+        register.secrets.token_hex = lambda _n: 'abc123def0'
+
+        handle, email = register._nimail_create()
+
+        self.assertEqual(email, 'ocabc123def0@nimail.cn')
+        self.assertEqual(handle, 'nimail|ocabc123def0@nimail.cn')
+        self.assertEqual(calls[0]['url'], 'https://www.nimail.cn/api/applymail')
+        self.assertEqual(calls[0]['data'], {'mail': 'ocabc123def0@nimail.cn'})
+        self.assertEqual(calls[0]['headers']['Accept'], 'application/json')
+
+    def test_nimail_fetch_reads_mail_list_and_raw_html(self):
+        calls = []
+
+        class FakeReq:
+            def post(self, url, **kwargs):
+                calls.append(('post', url, kwargs))
+                return FakeHttpResponse({
+                    'success': 'true',
+                    'mail': [
+                        {
+                            'subject': '???',
+                            'id': '1778675485493',
+                            'email': 'ocabc123def0@nimail.cn',
+                            'from': 'account@mail.nimail.ai',
+                        }
+                    ],
+                })
+
+            def get(self, url, **kwargs):
+                calls.append(('get', url, kwargs))
+                return FakeHttpResponse(text='<html><body>??? ABC-DEF</body></html>')
+
+        register.req = FakeReq()
+
+        text = register._tempmail_fetch('nimail|ocabc123def0@nimail.cn')
+
+        self.assertIn('???', text)
+        self.assertIn('ABC-DEF', text)
+        self.assertEqual(calls[0][1], 'https://www.nimail.cn/api/getmails')
+        self.assertEqual(calls[0][2]['data']['mail'], 'ocabc123def0@nimail.cn')
+        self.assertEqual(
+            calls[1][1],
+            'https://www.nimail.cn/api/raw-html/ocabc123def0%40nimail.cn/1778675485493',
+        )
+
+    def test_nimail_headers_accept_basic_auth_with_or_without_prefix(self):
+        register.NIMAIL_BASIC_AUTH = 'abc123'
+        self.assertEqual(register._nimail_headers()['Authorization'], 'Basic abc123')
+
+        register.NIMAIL_BASIC_AUTH = 'Basic abc123'
+        self.assertEqual(register._nimail_headers()['Authorization'], 'Basic abc123')
+
+    def test_create_email_uses_nimail_after_other_tempmail_providers_fail(self):
+        register.EMAIL_MODE = 'tempmail'
+        old_mailtm_create = register._mailtm_create
+        old_lol_create = register._lol_create
+        old_nimail_create = register._nimail_create
+        try:
+            register._mailtm_create = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('mailtm down'))
+            register._lol_create = lambda: (_ for _ in ()).throw(RuntimeError('lol down'))
+            register._nimail_create = lambda: ('nimail|fallback@nimail.cn', 'fallback@nimail.cn')
+
+            handle, email, password = register.create_email()
+        finally:
+            register._mailtm_create = old_mailtm_create
+            register._lol_create = old_lol_create
+            register._nimail_create = old_nimail_create
+
+        self.assertEqual(handle, 'nimail|fallback@nimail.cn')
+        self.assertEqual(email, 'fallback@nimail.cn')
+        self.assertTrue(password)
+
+
 class FindChromeTests(unittest.TestCase):
     def _create_chrome(self, home, version):
         chrome_dir = os.path.join(home, ".cloakbrowser", f"chromium-{version}")

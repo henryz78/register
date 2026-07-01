@@ -51,6 +51,19 @@ HTTPS_PROXY=http://127.0.0.1:7890
 EMAIL_MODE=tempmail
 ```
 
+`tempmail` 内置 5 个临时邮箱 provider，按顺序自动 fallback：
+
+```text
+mail.tm -> mail.gw -> duckmail.sbs -> tempmail.lol -> nimail.cn
+```
+
+`nimail.cn` 作为最后兜底 provider，默认走共享免费接口。需要专属额度时可选配置：
+
+```env
+NIMAIL_API_BASE=https://www.nimail.cn
+NIMAIL_BASIC_AUTH=
+```
+
 `custom` 是自建域名邮箱模式，适合长时间运行。需要一个已接入 Cloudflare Email Routing 的域名，并在运行机器上启动本项目的收信服务。
 
 配置步骤：
@@ -83,6 +96,8 @@ EMAIL_API=http://127.0.0.1:8080
 | `EMAIL_MODE` | `tempmail` | 邮箱模式，支持 `tempmail` 和 `custom` |
 | `EMAIL_DOMAIN` | 空 | `custom` 模式使用的域名 |
 | `EMAIL_API` | `http://127.0.0.1:8080` | 本地收信服务地址 |
+| `NIMAIL_API_BASE` | `https://www.nimail.cn` | NiMail API 地址 |
+| `NIMAIL_BASIC_AUTH` | 空 | 可选 NiMail Basic 授权码，可填授权码或完整 `Basic xxx` |
 | `TARGET` | `0` | 主结果最多保存 N 个成功账号，`0` 表示不限 |
 | `TARGET_OVERFLOW` | `1` | 达标后已完成账号写入 `overflow_*` 文件 |
 | `TARGET_DRAIN_SECONDS` | `8` | 达标后等待在途任务收尾秒数 |
